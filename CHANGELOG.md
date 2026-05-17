@@ -6,11 +6,11 @@
 
 ### 🚀 主要新功能
 
-- 💥 支持串口（COM/TTY）资产、终端连接与 AI 串口命令 [#89](https://github.com/opskat/opskat/issues/89) (by @CodFrm)
+- 💥 支持串口（COM/TTY）资产、终端连接与 AI 串口命令 ([#89](https://github.com/opskat/opskat/pull/89)) (by @fqscfqj)
 - 💥 支持 AI 助手选择资产上下文 ([#121](https://github.com/opskat/opskat/pull/121)) (by @CodFrm)
 - ✨ 顶部增加 VSCode 风搜索/命令面板与资产、AI 面板折叠按钮 ([#113](https://github.com/opskat/opskat/pull/113)) (by @CodFrm)
-- ✨ SSH 资产右键支持一键打开文件管理 [#104](https://github.com/opskat/opskat/issues/104) (by @CodFrm)
-- ✨ 资产树支持拖拽重排 + 修复嵌套分组添加资产回填错分组 [#101](https://github.com/opskat/opskat/issues/101) (by @CodFrm)
+- ✨ SSH 资产右键支持一键打开文件管理 ([#104](https://github.com/opskat/opskat/pull/104)) (by @lonelyman0108)
+- ✨ 资产树支持拖拽重排 + 修复嵌套分组添加资产回填错分组 ([#101](https://github.com/opskat/opskat/pull/101)) (by @lonelyman0108)
 - ✨ 密钥关联用户名 + 资产表单根据所选密钥自动填 username ([#88](https://github.com/opskat/opskat/pull/88)) (by @CodFrm)
 - ✨ SSH 60s 保活心跳 + 断开后回车重连 ([#81](https://github.com/opskat/opskat/pull/81)) (by @CodFrm)
 - ✨ 新增公共 SSH 客户端包 ([#82](https://github.com/opskat/opskat/pull/82)) (by @CodFrm)
@@ -37,8 +37,8 @@
 
 - 🐛 修复 SSH 私钥认证后无法继续 keyboard-interactive(MFA/OTP) ([#109](https://github.com/opskat/opskat/pull/109)) (by @CodFrm)
 - 🐛 修复更新后立即重启未自动启动 ([#106](https://github.com/opskat/opskat/pull/106)) (by @CodFrm)
-- 🐛 修复 SSH 终端 Powerline/Nerd Font 图标渲染为方框 + 字体下拉改读系统字体推荐/其他两区 + 主题切换回显当前选中 [#103](https://github.com/opskat/opskat/issues/103) (by @CodFrm)
-- 🐛 设置子标签持久化 + 资产测试连接可取消 + 重构资产表单布局 [#102](https://github.com/opskat/opskat/issues/102) (by @CodFrm)
+- 🐛 修复 SSH 终端 Powerline/Nerd Font 图标渲染为方框 + 字体下拉改读系统字体推荐/其他两区 + 主题切换回显当前选中 ([#103](https://github.com/opskat/opskat/pull/103)) (by @lonelyman0108)
+- 🐛 设置子标签持久化 + 资产测试连接可取消 + 重构资产表单布局 ([#102](https://github.com/opskat/opskat/pull/102)) (by @lonelyman0108)
 - 🐛 修复 SFTP 传输进度 tab 作用域 ([#95](https://github.com/opskat/opskat/pull/95)) (by @CodFrm)
 - 🐛 Terminal IME：旁路 xterm key-rollover input 丢字 bug ([#105](https://github.com/opskat/opskat/pull/105)) (by @CodFrm)
 - 🐛 Terminal IME：抽 TerminalInputBridge + isComposing 早返回 [#94](https://github.com/opskat/opskat/issues/94) ([#98](https://github.com/opskat/opskat/pull/98)) (by @CodFrm)
