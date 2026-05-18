@@ -57,6 +57,7 @@
     "stopped": "Stopped",
     "error": "Error",
     "partial": "Partial",
+    "processing": "Processing...",
     "deleteConfirmTitle": "Confirm Delete Config",
     "deleteConfirmDesc": "Are you sure you want to delete forward config \"{{name}}\"? This cannot be undone."
   },

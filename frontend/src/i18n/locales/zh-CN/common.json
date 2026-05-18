@@ -57,6 +57,7 @@
     "stopped": "已停止",
     "error": "错误",
     "partial": "部分运行",
+    "processing": "处理中...",
     "deleteConfirmTitle": "确认删除配置",
     "deleteConfirmDesc": "确定要删除转发配置 \"{{name}}\" 吗？此操作不可撤销。"
   },
