@@ -1013,6 +1013,7 @@
       "cursor": "光标",
       "cursorAccent": "光标强调",
       "selection": "选区",
+      "selectionFg": "选区前景",
       "black": "黑",
       "red": "红",
       "green": "绿",

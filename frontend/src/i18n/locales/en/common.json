@@ -1028,6 +1028,7 @@
       "cursor": "Cursor",
       "cursorAccent": "Cursor Accent",
       "selection": "Selection",
+      "selectionFg": "Selection Foreground",
       "black": "Black",
       "red": "Red",
       "green": "Green",
