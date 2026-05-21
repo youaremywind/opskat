@@ -2,7 +2,8 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@opskat/ui";
 import { useAIStore } from "@/stores/aiStore";
-import { CreateAIProvider, SetActiveAIProvider } from "../../../wailsjs/go/app/App";
+import { CreateAIProvider } from "../../../wailsjs/go/ai/AI";
+import { SetActiveAIProvider } from "../../../wailsjs/go/ai/AI";
 import { Bot, Zap, Sparkles, ArrowRight, Settings, SquareTerminal } from "lucide-react";
 import { toast } from "sonner";
 import { AIProviderForm, type AIProviderFormValues } from "./AIProviderForm";
@@ -38,7 +39,9 @@ export function AISetupWizard() {
         values.apiKey,
         values.model,
         values.maxOutputTokens,
-        values.contextWindow
+        values.contextWindow,
+        values.reasoningEnabled,
+        values.reasoningEffort
       );
       await SetActiveAIProvider(created.id);
       await useAIStore.getState().checkConfigured();

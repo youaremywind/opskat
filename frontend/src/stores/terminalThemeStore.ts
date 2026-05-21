@@ -1,14 +1,36 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { TerminalTheme, builtinThemes } from "@/data/terminalThemes";
+import {
+  CUSTOM_TERMINAL_FONT_PRESET_ID,
+  DEFAULT_TERMINAL_FONT_FAMILY,
+  DEFAULT_TERMINAL_FONT_PRESET_ID,
+  findTerminalFontPreset,
+  normalizeTerminalFontFamily,
+  quoteFamilyName,
+  resolveTerminalFontFamily,
+} from "@/data/terminalFonts";
+
+export const SCROLLBACK_MIN = 100;
+export const SCROLLBACK_MAX = 1000000;
+export const SCROLLBACK_DEFAULT = 25000;
 
 interface TerminalThemeState {
   selectedThemeId: string;
   customThemes: TerminalTheme[];
   fontSize: number;
+  fontPresetId: string;
+  customFontFamily: string;
+  fontFamily: string;
+  scrollback: number;
+  webglEnabled: boolean;
 
   setSelectedThemeId: (id: string) => void;
   setFontSize: (size: number) => void;
+  setFontPresetId: (id: string) => void;
+  setCustomFontFamily: (fontFamily: string) => void;
+  setScrollback: (lines: number) => void;
+  setWebglEnabled: (enabled: boolean) => void;
   addCustomTheme: (theme: TerminalTheme) => void;
   updateCustomTheme: (theme: TerminalTheme) => void;
   removeCustomTheme: (id: string) => void;
@@ -21,10 +43,62 @@ export const useTerminalThemeStore = create<TerminalThemeState>()(
       selectedThemeId: "default",
       customThemes: [],
       fontSize: 14,
+      fontPresetId: DEFAULT_TERMINAL_FONT_PRESET_ID,
+      customFontFamily: "",
+      fontFamily: DEFAULT_TERMINAL_FONT_FAMILY,
+      scrollback: SCROLLBACK_DEFAULT,
+      webglEnabled: true,
 
       setSelectedThemeId: (id) => set({ selectedThemeId: id }),
+      setWebglEnabled: (enabled) => set({ webglEnabled: enabled }),
 
       setFontSize: (size) => set({ fontSize: Math.max(8, Math.min(32, size)) }),
+
+      setFontPresetId: (id) => {
+        if (id === CUSTOM_TERMINAL_FONT_PRESET_ID) {
+          const customFontFamily = normalizeTerminalFontFamily(get().customFontFamily);
+          set({
+            fontPresetId: CUSTOM_TERMINAL_FONT_PRESET_ID,
+            customFontFamily,
+            fontFamily: resolveTerminalFontFamily(customFontFamily),
+          });
+          return;
+        }
+
+        const preset = findTerminalFontPreset(id);
+        if (preset) {
+          set({ fontPresetId: preset.id, fontFamily: preset.fontFamily });
+          return;
+        }
+
+        // Unknown id — treat as a system font family name picked from the
+        // dynamic dropdown (where items use the family name itself as their id).
+        // Blank input falls back to the default preset.
+        const familyName = normalizeTerminalFontFamily(id);
+        if (!familyName) {
+          const def = findTerminalFontPreset(DEFAULT_TERMINAL_FONT_PRESET_ID);
+          if (def) set({ fontPresetId: def.id, fontFamily: def.fontFamily });
+          return;
+        }
+        set({
+          fontPresetId: familyName,
+          fontFamily: quoteFamilyName(familyName),
+        });
+      },
+
+      setCustomFontFamily: (fontFamily) => {
+        const customFontFamily = normalizeTerminalFontFamily(fontFamily);
+        set({
+          fontPresetId: CUSTOM_TERMINAL_FONT_PRESET_ID,
+          customFontFamily,
+          fontFamily: resolveTerminalFontFamily(customFontFamily),
+        });
+      },
+
+      setScrollback: (lines) => {
+        const n = Number.isFinite(lines) ? Math.floor(lines) : SCROLLBACK_DEFAULT;
+        set({ scrollback: Math.max(SCROLLBACK_MIN, Math.min(SCROLLBACK_MAX, n)) });
+      },
 
       addCustomTheme: (theme) =>
         set((state) => ({
@@ -66,6 +140,8 @@ export function toXtermTheme(theme: TerminalTheme) {
     cursor: theme.cursor,
     cursorAccent: theme.cursorAccent,
     selectionBackground: theme.selectionBackground,
+    selectionForeground: theme.selectionForeground,
+    selectionInactiveBackground: theme.selectionInactiveBackground,
     black: theme.black,
     red: theme.red,
     green: theme.green,

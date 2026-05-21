@@ -1,9 +1,11 @@
 import { useState, useEffect } from "react";
 import { create } from "zustand";
+import { SendAIMessage } from "../../wailsjs/go/ai/AI";
 import {
-  SendAIMessage,
   StopAIGeneration,
   QueueAIMessage,
+  RemoveQueuedAIMessage,
+  ClearQueuedAIMessages,
   GetActiveAIProvider,
   CreateConversation,
   ListConversations,
@@ -11,28 +13,30 @@ import {
   DeleteConversation,
   SaveConversationMessages,
   UpdateConversationTitle,
-} from "../../wailsjs/go/app/App";
-import { ai, conversation_entity, app } from "../../wailsjs/go/models";
+} from "../../wailsjs/go/ai/AI";
+import { ai, conversation_entity, runner } from "../../wailsjs/go/models";
 import { EventsOn, EventsEmit } from "../../wailsjs/runtime/runtime";
 import i18n from "../i18n";
-import { useTabStore, registerTabCloseHook, registerTabRestoreHook, type AITabMeta, type Tab } from "./tabStore";
-import { useAssetStore } from "./assetStore";
-import { buildGroupPathMap } from "@/lib/assetSearch";
+import {
+  useTabStore,
+  registerTabCloseHook,
+  registerTabRestoreHook,
+  type AITabMeta,
+  type QueryTabMeta,
+  type Tab,
+} from "./tabStore";
+import { stripMentionTags } from "@/lib/mentionXml";
+import { classifyError, type ErrorKind } from "@/lib/aiError";
 
-// 用户消息中的资产引用（对应前端 @ 提及）
-export interface MentionRef {
-  assetId: number;
-  name: string; // 发送时刻的资产名快照
-  start: number; // content 中字符起始索引（含 @ 符号，JS 字符串索引）
-  end: number; // 结束索引（不含）
-}
-
-// 内容块：文本、工具调用、Sub Agent 或审批
+// 内容块：文本、工具调用、Sub Agent、审批、错误（持久化字段）。
+// "error" 块由 EventError 推入，或在 retry 中途退出落盘时由 retryStatus 物化而来。
+// 不会作为历史回放发给 LLM —— ToAgentMessages 后端侧需过滤。
 export interface ContentBlock {
-  type: "text" | "tool" | "agent" | "approval" | "thinking";
+  type: "text" | "tool" | "agent" | "approval" | "thinking" | "error";
   content: string;
   toolName?: string;
   toolInput?: string;
+  toolCallId?: string; // 跨 turn 还原 tool_calls 历史；老数据无此字段，发送时退化为塌缩消息
   status?: "running" | "completed" | "error" | "pending_confirm" | "cancelled";
   confirmId?: string;
   // agent 块专用
@@ -40,7 +44,7 @@ export interface ContentBlock {
   agentTask?: string;
   childBlocks?: ContentBlock[];
   // approval 块专用
-  approvalKind?: "single" | "batch" | "grant";
+  approvalKind?: "single" | "batch" | "grant" | "local_tool";
   approvalItems?: Array<{
     type: string;
     asset_id: number;
@@ -52,6 +56,13 @@ export interface ContentBlock {
   }>;
   approvalDescription?: string;
   approvalSessionId?: string;
+  approvalToolName?: string; // local_tool: "local_bash" | "local_write" | "local_edit"
+  approvalPatterns?: string[]; // local_tool: 默认 pattern 列表，本次会话允许时预填可编辑
+  // error 块专用：
+  //   kind   — classifyError 输出的归类标签，UI 据此显示标题/图标
+  //   detail — 原始错误正文（content 保留为空或拼接版，前端展示用 detail 优先）
+  errorKind?: ErrorKind;
+  errorDetail?: string;
 }
 
 // Assistant 消息累计 token 使用量；单次用户 turn 可能跨多轮 LLM 调用，前端按 usage 事件累加。
@@ -62,31 +73,48 @@ export interface TokenUsage {
   cacheReadTokens?: number;
 }
 
+// retry 期间的 transient 状态：cago EventRetry 时设置，下一条非 retry 事件到达时清掉。
+// 不持久化到 DB —— toDisplayMessages 序列化时直接 omit。
+// 应用退出 / 关 tab 时若该字段仍存在，会被 materializeRetryStatusAsError 物化成
+// 一个 ErrorBlock(kind=interrupted) 落盘，下次打开仍可见。
+export interface ChatMessageRetryStatus {
+  attempt: number;
+  delayMs: number;
+  startedAt: number; // Date.now()，前端做倒计时 countdown 用
+  cause?: string;
+}
+
 export interface ChatMessage {
+  // 前端会话内稳定 ID（仅前端使用，不随后端持久化往返）。
+  // 用作 React list key，避免编辑重发 / queue_consumed 截断重插时按 index 复用错误的子组件实例
+  // （ToolBlock / ThinkingBlock 的 expanded 等本地 state 串到别的消息）。
+  id?: string;
   role: "user" | "assistant" | "tool";
   content: string;
   blocks: ContentBlock[];
   streaming?: boolean;
-  mentions?: MentionRef[];
   tokenUsage?: TokenUsage;
+  retryStatus?: ChatMessageRetryStatus;
 }
 
 export interface PendingQueueItem {
+  id: string;
   text: string;
-  mentions?: MentionRef[];
 }
 
 interface StreamEventData {
   type: string;
   content?: string;
+  queue_id?: string;
   tool_name?: string;
   tool_input?: string;
+  tool_call_id?: string;
   confirm_id?: string;
   error?: string;
   agent_role?: string;
   agent_task?: string;
   // approval_request 专用
-  kind?: "single" | "batch" | "grant";
+  kind?: "single" | "batch" | "grant" | "local_tool";
   items?: Array<{
     type: string;
     asset_id: number;
@@ -98,6 +126,7 @@ interface StreamEventData {
   }>;
   description?: string;
   session_id?: string;
+  patterns?: string[]; // local_tool: 默认 pattern 列表，前端在"本次会话允许"时预填到可编辑文本框
   // usage 事件：后端下发每轮 LLM 调用的 token 使用量
   usage?: {
     input_tokens?: number;
@@ -105,20 +134,239 @@ interface StreamEventData {
     cache_creation_tokens?: number;
     cache_read_tokens?: number;
   };
+  // retry 事件：下一次重试前的等待毫秒（Retry-After 头或指数退避）；attempt 序号放在 content 字段
+  retryDelayMs?: number;
 }
 
-interface TabState {
-  // Phase 1 清理后：tabStates 保留为 UI 态占位（将来放 scrollTop / inputDraft 等），
-  // messages/sending/pendingQueue 已全部迁移到 conversationMessages / conversationStreaming。
-  _marker?: "tab-state";
+// Sidebar 专用 UI 态（inputDraft / scrollTop / editTarget）。workspace tab 不使用这些字段，
+// 工作区 tab 只在 tabStates 里放一个空占位对象标记 "该 tab 已注册"。
+interface SidebarTabUIState {
+  inputDraft: {
+    content: string;
+  };
+  scrollTop: number;
+  editTarget: {
+    conversationId: number;
+    messageIndex: number;
+    draft: {
+      content: string;
+    };
+  } | null;
+}
+
+export interface SidebarAITab {
+  id: string;
+  conversationId: number | null;
+  title: string;
+  createdAt: number;
+  uiState: SidebarTabUIState;
+}
+
+export type SidebarTabStatus = "waiting_approval" | "error" | "running" | "done" | null;
+
+const SIDEBAR_TABS_STORAGE_KEY = "ai_sidebar_tabs";
+const SIDEBAR_ACTIVE_TAB_STORAGE_KEY = "ai_sidebar_active_tab_id";
+const LEGACY_SIDEBAR_CONVERSATION_KEY = "ai_sidebar_conversation_id";
+const LEGACY_SIDEBAR_INPUT_DRAFT_KEY = "ai_sidebar_input_draft";
+const LEGACY_SIDEBAR_LAST_BOUND_KEY = "ai_sidebar_last_bound";
+
+function createDefaultSidebarUiState(overrides?: Partial<SidebarTabUIState> | null): SidebarTabUIState {
+  return {
+    inputDraft: {
+      content: overrides?.inputDraft?.content ?? "",
+    },
+    scrollTop: typeof overrides?.scrollTop === "number" ? overrides.scrollTop : 0,
+    editTarget: overrides?.editTarget
+      ? {
+          conversationId: overrides.editTarget.conversationId,
+          messageIndex: overrides.editTarget.messageIndex,
+          draft: {
+            content: overrides.editTarget.draft.content ?? "",
+          },
+        }
+      : null,
+  };
+}
+
+// 选项里 activate 明确为 false 才保留旧 active，否则把 active 切到新 tab。
+function resolveNextActiveId(prevActive: string | null, candidate: string, activate: boolean | undefined): string {
+  return activate === false && prevActive ? prevActive : candidate;
+}
+
+// 统一的"如果 host 没 conversation 就新建一个"小助手：只负责 CreateConversation + try/catch。
+// 更新 store 的工作交给 attach 回调——sendToTab 需要更新 workspace tab meta，
+// sendFromSidebarTab 需要更新 sidebar tab + 预置 conversations/messages/streaming。
+async function createConversationForEmptyHost(
+  attach: (conv: conversation_entity.Conversation) => void
+): Promise<number | null> {
+  try {
+    const conv = await CreateConversation();
+    attach(conv);
+    return conv.ID;
+  } catch {
+    return null;
+  }
+}
+
+function getDefaultSidebarTitle() {
+  return i18n.t("ai.newConversation");
+}
+
+function createSidebarTabId() {
+  return `sidebar-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function createPendingQueueId() {
+  const randomUUID = globalThis.crypto?.randomUUID?.bind(globalThis.crypto);
+  if (randomUUID) return `queue-${randomUUID()}`;
+  return `queue-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function createSidebarTab(overrides?: Partial<SidebarAITab>): SidebarAITab {
+  return {
+    id: overrides?.id ?? createSidebarTabId(),
+    conversationId: overrides?.conversationId ?? null,
+    title: overrides?.title ?? getDefaultSidebarTitle(),
+    createdAt: overrides?.createdAt ?? Date.now(),
+    uiState: createDefaultSidebarUiState(overrides?.uiState),
+  };
+}
+
+// localStorage 是不可信存储，回填草稿时把 <mention> 标签降级为内部纯文本，
+// 防止用户或第三方篡改 storage 后伪造发送时的资产引用。
+function sanitizeSidebarUiStateForPersistence(
+  uiState: Partial<SidebarTabUIState> | null | undefined
+): SidebarTabUIState | undefined {
+  if (!uiState) return undefined;
+  return createDefaultSidebarUiState({
+    ...uiState,
+    inputDraft: {
+      content: stripMentionTags(uiState.inputDraft?.content ?? ""),
+    },
+    editTarget: uiState.editTarget
+      ? {
+          conversationId: uiState.editTarget.conversationId,
+          messageIndex: uiState.editTarget.messageIndex,
+          draft: {
+            content: stripMentionTags(uiState.editTarget.draft.content ?? ""),
+          },
+        }
+      : null,
+  });
+}
+
+function sanitizeSidebarTab(raw: unknown): SidebarAITab | null {
+  if (!raw || typeof raw !== "object") return null;
+  const tab = raw as Partial<SidebarAITab>;
+  if (typeof tab.id !== "string" || tab.id.length === 0) return null;
+  const conversationId =
+    typeof tab.conversationId === "number" && Number.isFinite(tab.conversationId) ? tab.conversationId : null;
+  return createSidebarTab({
+    id: tab.id,
+    conversationId,
+    title: typeof tab.title === "string" && tab.title.length > 0 ? tab.title : undefined,
+    createdAt: typeof tab.createdAt === "number" && Number.isFinite(tab.createdAt) ? tab.createdAt : undefined,
+    uiState: sanitizeSidebarUiStateForPersistence(tab.uiState),
+  });
+}
+
+function clearLegacySidebarKeys() {
+  localStorage.removeItem(LEGACY_SIDEBAR_CONVERSATION_KEY);
+  localStorage.removeItem(LEGACY_SIDEBAR_INPUT_DRAFT_KEY);
+  localStorage.removeItem(LEGACY_SIDEBAR_LAST_BOUND_KEY);
+}
+
+function persistSidebarTabs(tabs: SidebarAITab[], activeSidebarTabId: string | null) {
+  if (tabs.length === 0) {
+    localStorage.removeItem(SIDEBAR_TABS_STORAGE_KEY);
+    localStorage.removeItem(SIDEBAR_ACTIVE_TAB_STORAGE_KEY);
+    clearLegacySidebarKeys();
+    return;
+  }
+  localStorage.setItem(
+    SIDEBAR_TABS_STORAGE_KEY,
+    JSON.stringify(
+      tabs.map((tab) => ({
+        ...tab,
+        uiState: sanitizeSidebarUiStateForPersistence(tab.uiState),
+      }))
+    )
+  );
+  localStorage.setItem(SIDEBAR_ACTIVE_TAB_STORAGE_KEY, activeSidebarTabId ?? tabs[0].id);
+  clearLegacySidebarKeys();
+}
+
+function loadInitialSidebarState() {
+  const storedTabs = localStorage.getItem(SIDEBAR_TABS_STORAGE_KEY);
+  const storedActive = localStorage.getItem(SIDEBAR_ACTIVE_TAB_STORAGE_KEY);
+  if (storedTabs) {
+    try {
+      const parsed = JSON.parse(storedTabs);
+      const tabs = Array.isArray(parsed)
+        ? parsed.map(sanitizeSidebarTab).filter((tab): tab is SidebarAITab => !!tab)
+        : [];
+      const activeSidebarTabId = tabs.some((tab) => tab.id === storedActive) ? storedActive : (tabs[0]?.id ?? null);
+      return {
+        tabs,
+        activeSidebarTabId,
+        migratedLegacy: false,
+      };
+    } catch {
+      // ignore invalid persisted data and fall back to sidebar state migration
+    }
+  }
+
+  const legacyConversation = localStorage.getItem(LEGACY_SIDEBAR_CONVERSATION_KEY);
+  const legacyLastBound = localStorage.getItem(LEGACY_SIDEBAR_LAST_BOUND_KEY);
+  const legacyDraft = localStorage.getItem(LEGACY_SIDEBAR_INPUT_DRAFT_KEY) || "";
+  const parsedConversationId = legacyConversation ? Number.parseInt(legacyConversation, 10) : Number.NaN;
+  const conversationId = Number.isFinite(parsedConversationId) ? parsedConversationId : null;
+  const hasLegacyState =
+    legacyConversation !== null ||
+    legacyLastBound !== null ||
+    localStorage.getItem(LEGACY_SIDEBAR_INPUT_DRAFT_KEY) !== null;
+
+  // 从单 sidebar key 平滑迁移到多 tab 模型：
+  // 只要检测到任意旧 key，就恢复成一个初始侧边 tab，避免升级后直接丢上下文。
+  if (!hasLegacyState) {
+    return {
+      tabs: [] as SidebarAITab[],
+      activeSidebarTabId: null as string | null,
+      migratedLegacy: false,
+    };
+  }
+
+  const initialTab = createSidebarTab({
+    conversationId,
+    title: conversationId == null ? getDefaultSidebarTitle() : undefined,
+    uiState: createDefaultSidebarUiState({
+      inputDraft: {
+        content: legacyDraft,
+      },
+    }),
+  });
+
+  return {
+    tabs: [initialTab],
+    activeSidebarTabId: initialTab.id,
+    migratedLegacy: true,
+  };
 }
 
 // 模块级 per-conversation 事件监听管理（不放 zustand，因为含函数引用）
 const conversationListeners = new Map<number, { cancel: (() => void) | null; generation: number }>();
+const conversationStopRequests = new Set<number>();
 
-// 每个 conversation 只保留一个待执行的落盘定时器。
-// 流式输出期间会持续增量更新消息，如果每次都立即保存，磁盘写入会过于频繁。
-const persistTimers = new Map<number, number>();
+const conversationRenameVersions = new Map<number, number>();
+const conversationRenameInFlight = new Set<number>();
+let conversationListBarrier = 0;
+let conversationListRequestId = 0;
+let latestAppliedConversationListRequestId = 0;
+
+type ConversationListRequestToken = {
+  requestId: number;
+  barrier: number;
+};
 
 function getOrCreateConvListener(convId: number) {
   if (!conversationListeners.has(convId)) {
@@ -131,8 +379,8 @@ function cleanupConvListener(convId: number) {
   const listener = conversationListeners.get(convId);
   if (listener?.cancel) listener.cancel();
   conversationListeners.delete(convId);
+  conversationStopRequests.delete(convId);
   cleanupStreamBuffer(convId);
-  cleanupPersistTimer(convId);
 }
 
 function invalidateConvListenerForReplay(convId: number) {
@@ -146,15 +394,6 @@ function invalidateConvListenerForReplay(convId: number) {
   cleanupStreamBuffer(convId);
 }
 
-// cleanupPersistTimer 清理指定 conversation 尚未执行的落盘定时器。
-function cleanupPersistTimer(convId: number) {
-  const timer = persistTimers.get(convId);
-  if (timer !== undefined) {
-    window.clearTimeout(timer);
-    persistTimers.delete(convId);
-  }
-}
-
 // persistConversationSnapshot 将当前 conversation 的消息快照保存到持久化存储。
 function persistConversationSnapshot(convId: number, includeStreaming = false) {
   const msgs = useAIStore.getState().conversationMessages[convId];
@@ -162,34 +401,22 @@ function persistConversationSnapshot(convId: number, includeStreaming = false) {
   SaveConversationMessages(convId, toDisplayMessages(msgs, includeStreaming)).catch(() => {});
 }
 
-// schedulePersist 为 conversation 安排一次短延迟的消息快照保存。
-// 流式输出期间做一次短延迟防抖：
-// 1. 降低高频写入带来的性能开销；
-// 2. 让应用异常退出前，尽量已经落下最近一段对话快照。
-function schedulePersist(convId: number, includeStreaming = false) {
-  cleanupPersistTimer(convId);
-  const timer = window.setTimeout(() => {
-    persistTimers.delete(convId);
-    persistConversationSnapshot(convId, includeStreaming);
-  }, 300);
-  persistTimers.set(convId, timer);
-}
-
-// persistNow 取消 schedulePersist 的防抖定时器，立即落盘一次。
-// 用于低频关键事件（用户发送、工具调用、审批等），避免防抖窗口内崩溃丢数据。
+// persistNow 立即落盘一次。
+// 用于低频关键事件（用户发送、工具调用、审批、终态等）。
 function persistNow(convId: number, includeStreaming = false) {
-  cleanupPersistTimer(convId);
   persistConversationSnapshot(convId, includeStreaming);
 }
 
-// === 流式事件缓冲（性能优化：合并高频 content/thinking 事件，按帧刷新）===
+// === 流式事件缓冲（性能优化：合并高频 content/thinking 事件，降低主线程刷新压力）===
 
-const streamBuffers = new Map<number, { content: string; thinking: string; raf: number | null }>();
+const STREAM_FLUSH_INTERVAL_MS = 50;
+type StreamBuffer = { content: string; thinking: string; timer: ReturnType<typeof setTimeout> | null };
+const streamBuffers = new Map<number, StreamBuffer>();
 
 function getOrCreateStreamBuffer(convId: number) {
   let buf = streamBuffers.get(convId);
   if (!buf) {
-    buf = { content: "", thinking: "", raf: null };
+    buf = { content: "", thinking: "", timer: null };
     streamBuffers.set(convId, buf);
   }
   return buf;
@@ -198,9 +425,9 @@ function getOrCreateStreamBuffer(convId: number) {
 function flushStreamBuffer(convId: number) {
   const buf = streamBuffers.get(convId);
   if (!buf) return;
-  if (buf.raf !== null) {
-    cancelAnimationFrame(buf.raf);
-    buf.raf = null;
+  if (buf.timer !== null) {
+    clearTimeout(buf.timer);
+    buf.timer = null;
   }
   const cd = buf.content;
   const td = buf.thinking;
@@ -235,14 +462,21 @@ function flushStreamBuffer(convId: number) {
       conversationMessages: { ...state.conversationMessages, [convId]: updated },
     };
   });
+}
 
-  // 增量内容刷入消息列表后，同步安排一次防抖落盘。
-  schedulePersist(convId, true);
+function scheduleStreamBufferFlush(convId: number) {
+  const buf = getOrCreateStreamBuffer(convId);
+  if (buf.timer !== null) return;
+  buf.timer = setTimeout(() => {
+    const b = streamBuffers.get(convId);
+    if (b) b.timer = null;
+    flushStreamBuffer(convId);
+  }, STREAM_FLUSH_INTERVAL_MS);
 }
 
 function cleanupStreamBuffer(convId: number) {
   const buf = streamBuffers.get(convId);
-  if (buf?.raf != null) cancelAnimationFrame(buf.raf);
+  if (buf?.timer != null) clearTimeout(buf.timer);
   streamBuffers.delete(convId);
 }
 
@@ -283,12 +517,38 @@ function normalizeSnapshotStatus(status: ContentBlock["status"]): ContentBlock["
   return STREAMING_SNAPSHOT_STATUS_OVERRIDES[status] ?? status;
 }
 
-function toDisplayMessages(msgs: ChatMessage[], includeStreaming = false): app.ConversationDisplayMessage[] {
-  return msgs
+// materializeRetryStatusAsError 把 retry 进行中的 transient 状态物化成一个
+// kind="interrupted" 的 ErrorBlock。在 includeStreaming=true 的落盘路径调用
+// （关闭 tab / 切会话 / Wails OnBeforeClose 应用退出），保证下次打开仍能看到
+// "重试中被中断"的错误线索，而不是只看到一段灰色 cancelled 文本。
+//
+// 没有 retryStatus 时原样返回，避免无意义的对象拷贝。
+function materializeRetryStatusAsError(msg: ChatMessage): ChatMessage {
+  if (!msg.retryStatus) return msg;
+  const { kind, message } = classifyError(msg.retryStatus.cause, "interrupted");
+  const errBlock: ContentBlock = {
+    type: "error",
+    content: message,
+    errorKind: kind,
+    errorDetail: msg.retryStatus.cause || "",
+  };
+  return {
+    ...msg,
+    blocks: [...msg.blocks, errBlock],
+    retryStatus: undefined,
+  };
+}
+
+function toDisplayMessages(msgs: ChatMessage[], includeStreaming = false): ai.ConversationDisplayMessage[] {
+  // includeStreaming=true 的路径都是"非自然终态落盘"（tab 关闭 / 切会话 / 应用退出），
+  // 在这里把 retryStatus 物化为 interrupted ErrorBlock；其余路径 retryStatus 自动 omit
+  // （ChatMessage 顶层字段不进入 ConversationDisplayMessage）。
+  const prepared = includeStreaming ? msgs.map(materializeRetryStatusAsError) : msgs;
+  return prepared
     .filter((m) => includeStreaming || !m.streaming)
     .map(
       (m) =>
-        new app.ConversationDisplayMessage({
+        new ai.ConversationDisplayMessage({
           role: m.role,
           content: m.content,
           blocks: m.blocks.map(
@@ -299,15 +559,8 @@ function toDisplayMessages(msgs: ChatMessage[], includeStreaming = false): app.C
                 toolName: b.toolName,
                 toolInput: b.toolInput,
                 status: includeStreaming ? normalizeSnapshotStatus(b.status) : b.status,
-              })
-          ),
-          mentions: (m.mentions || []).map(
-            (mr) =>
-              new conversation_entity.MentionRef({
-                assetId: mr.assetId,
-                name: mr.name,
-                start: mr.start,
-                end: mr.end,
+                errorKind: b.errorKind,
+                errorDetail: b.errorDetail,
               })
           ),
           tokenUsage: m.tokenUsage ? new conversation_entity.TokenUsage(m.tokenUsage) : undefined,
@@ -315,22 +568,19 @@ function toDisplayMessages(msgs: ChatMessage[], includeStreaming = false): app.C
     );
 }
 
-function convertDisplayMessages(displayMsgs: app.ConversationDisplayMessage[]): ChatMessage[] {
-  return (displayMsgs || []).map((dm: app.ConversationDisplayMessage) => ({
+function convertDisplayMessages(displayMsgs: ai.ConversationDisplayMessage[]): ChatMessage[] {
+  return (displayMsgs || []).map((dm: ai.ConversationDisplayMessage) => ({
+    id: crypto.randomUUID(),
     role: dm.role as "user" | "assistant" | "tool",
     content: dm.content,
     blocks: (dm.blocks || []).map((b: conversation_entity.ContentBlock) => ({
-      type: b.type as "text" | "tool" | "agent",
+      type: b.type as ContentBlock["type"],
       content: b.content,
       toolName: b.toolName,
       toolInput: b.toolInput,
-      status: b.status as "running" | "completed" | "error" | undefined,
-    })),
-    mentions: (dm.mentions || []).map((mr: conversation_entity.MentionRef) => ({
-      assetId: mr.assetId,
-      name: mr.name,
-      start: mr.start,
-      end: mr.end,
+      status: b.status as ContentBlock["status"],
+      errorKind: b.errorKind as ErrorKind | undefined,
+      errorDetail: b.errorDetail,
     })),
     tokenUsage: dm.tokenUsage
       ? {
@@ -379,10 +629,58 @@ function buildConversationTitle(content: string) {
   return chars.slice(0, CONVERSATION_TITLE_MAX_CHARS).join("");
 }
 
+function beginConversationRenameVersion(convId: number) {
+  const nextVersion = (conversationRenameVersions.get(convId) || 0) + 1;
+  conversationRenameVersions.set(convId, nextVersion);
+  return nextVersion;
+}
+
+function isLatestConversationRename(convId: number, version: number) {
+  return conversationRenameVersions.get(convId) === version;
+}
+
+function invalidateConversationListRequests() {
+  conversationListBarrier += 1;
+  return conversationListBarrier;
+}
+
+function beginConversationListRequest(): ConversationListRequestToken {
+  conversationListRequestId += 1;
+  return { requestId: conversationListRequestId, barrier: conversationListBarrier };
+}
+
+function canApplyConversationListRequest(request: ConversationListRequestToken) {
+  if (request.barrier !== conversationListBarrier) {
+    return false;
+  }
+  return request.requestId >= latestAppliedConversationListRequestId;
+}
+
+function markConversationListRequestApplied(request: ConversationListRequestToken) {
+  latestAppliedConversationListRequestId = request.requestId;
+}
+
+function applyConversationListSnapshot(convs: conversation_entity.Conversation[]) {
+  useAIStore.setState({ conversations: convs || [] });
+  useAIStore.getState().validateSidebarTabs();
+  const sidebarConversationIds = Array.from(
+    new Set(
+      useAIStore
+        .getState()
+        .sidebarTabs.map((tab) => tab.conversationId)
+        .filter((convId): convId is number => convId != null)
+    )
+  );
+  for (const convId of sidebarConversationIds) {
+    void ensureConversationMessagesLoaded(convId);
+  }
+}
+
 // 先同步当前内存里的会话列表和标签页标题，避免用户编辑后侧栏仍短暂显示旧标题。
 function syncConversationTitleLocally(convId: number, title: string) {
   useAIStore.setState((state) => ({
     conversations: state.conversations.map((conv) => (conv.ID === convId ? { ...conv, Title: title } : conv)),
+    sidebarTabs: state.sidebarTabs.map((tab) => (tab.conversationId === convId ? { ...tab, title } : tab)),
   }));
 
   const tabStore = useTabStore.getState();
@@ -397,15 +695,175 @@ function syncConversationTitleLocally(convId: number, title: string) {
   }
 }
 
+function getConversationTitleFallback(convId: number) {
+  const sidebarTabTitle = useAIStore.getState().sidebarTabs.find((tab) => tab.conversationId === convId)?.title;
+  if (sidebarTabTitle) return sidebarTabTitle;
+
+  const tab = useTabStore
+    .getState()
+    .tabs.find((item) => item.type === "ai" && (item.meta as AITabMeta).conversationId === convId);
+  if (!tab) return DEFAULT_CONVERSATION_TITLE;
+  const meta = tab.meta as AITabMeta;
+  return meta.title || tab.label || DEFAULT_CONVERSATION_TITLE;
+}
+
+function shouldAutoRenameAfterFirstTurnEdit(convId: number, previousFirstUserContent: string) {
+  const currentTitle =
+    useAIStore.getState().conversations.find((conv) => conv.ID === convId)?.Title ??
+    getConversationTitleFallback(convId);
+  return currentTitle === buildConversationTitle(previousFirstUserContent);
+}
+
+async function refreshConversationListAfterRename(convId: number, renameVersion: number) {
+  try {
+    const refreshRequest = beginConversationListRequest();
+    const convs = await ListConversations();
+    if (!isLatestConversationRename(convId, renameVersion)) {
+      return;
+    }
+    if (!canApplyConversationListRequest(refreshRequest)) {
+      return;
+    }
+    if (!Array.isArray(convs)) {
+      return;
+    }
+    markConversationListRequestApplied(refreshRequest);
+    applyConversationListSnapshot(convs || []);
+  } catch (refreshError) {
+    if (isLatestConversationRename(convId, renameVersion)) {
+      console.warn("刷新会话列表失败，保留本地重命名结果:", refreshError);
+    }
+  }
+}
+
+async function renameConversationInternal(
+  convId: number,
+  title: string,
+  options: { waitForListRefresh?: boolean } = {}
+) {
+  const normalizedTitle = buildConversationTitle(title);
+  const previousTitle = useAIStore.getState().conversations.find((conv) => conv.ID === convId)?.Title;
+  const rollbackTitle = previousTitle ?? getConversationTitleFallback(convId);
+  if (previousTitle === normalizedTitle) {
+    return true;
+  }
+  if (conversationRenameInFlight.has(convId)) {
+    return false;
+  }
+  conversationRenameInFlight.add(convId);
+  const renameVersion = beginConversationRenameVersion(convId);
+
+  // 显式重命名先做本地乐观更新，避免历史列表 / 上下文条 / 已打开宿主短暂显示旧标题。
+  invalidateConversationListRequests();
+  syncConversationTitleLocally(convId, normalizedTitle);
+
+  try {
+    await UpdateConversationTitle(convId, normalizedTitle);
+    if (!isLatestConversationRename(convId, renameVersion)) {
+      return true;
+    }
+    const refreshPromise = refreshConversationListAfterRename(convId, renameVersion);
+    if (options.waitForListRefresh === false) {
+      void refreshPromise;
+      return true;
+    }
+    await refreshPromise;
+    return true;
+  } catch (error) {
+    if (isLatestConversationRename(convId, renameVersion)) {
+      syncConversationTitleLocally(convId, rollbackTitle);
+      console.error("重命名会话失败:", error);
+    }
+    return false;
+  } finally {
+    conversationRenameInFlight.delete(convId);
+  }
+}
+
+function visitBlockStatuses(blocks: ContentBlock[] | undefined, visitor: (status: ContentBlock["status"]) => boolean) {
+  for (const block of blocks || []) {
+    if (visitor(block.status)) return true;
+    if (visitBlockStatuses(block.childBlocks, visitor)) return true;
+  }
+  return false;
+}
+
+function getConversationStatus(convId: number | null): SidebarTabStatus {
+  if (convId == null) return null;
+  const state = useAIStore.getState();
+  const messages = state.conversationMessages[convId] || [];
+  const streaming = state.conversationStreaming[convId] || { sending: false, pendingQueue: [] };
+  let lastAssistantMessage: (typeof messages)[number] | undefined;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message.role === "assistant") {
+      lastAssistantMessage = message;
+      break;
+    }
+  }
+  if (!lastAssistantMessage && messages.length === 0) return null;
+
+  if (visitBlockStatuses(lastAssistantMessage?.blocks, (status) => status === "pending_confirm")) {
+    return "waiting_approval";
+  }
+  if (visitBlockStatuses(lastAssistantMessage?.blocks, (status) => status === "error")) {
+    return "error";
+  }
+  if (
+    streaming.sending ||
+    !!lastAssistantMessage?.streaming ||
+    visitBlockStatuses(lastAssistantMessage?.blocks, (status) => status === "running")
+  ) {
+    return "running";
+  }
+  return messages.length > 0 ? "done" : null;
+}
+
+function getConversationHostCount(convId: number, options?: { ignoreSidebarTabId?: string; ignoreMainTabId?: string }) {
+  const sidebarHostCount = useAIStore
+    .getState()
+    .sidebarTabs.filter((tab) => tab.id !== options?.ignoreSidebarTabId && tab.conversationId === convId).length;
+  const mainTabHostCount = useTabStore
+    .getState()
+    .tabs.filter(
+      (tab) =>
+        tab.id !== options?.ignoreMainTabId && tab.type === "ai" && (tab.meta as AITabMeta).conversationId === convId
+    ).length;
+  return sidebarHostCount + mainTabHostCount;
+}
+
+function hasConversationHosts(convId: number, options?: { ignoreSidebarTabId?: string; ignoreMainTabId?: string }) {
+  return getConversationHostCount(convId, options) > 0;
+}
+
+function cleanupConversationIfUnused(
+  convId: number,
+  options?: { ignoreSidebarTabId?: string; ignoreMainTabId?: string }
+) {
+  if (hasConversationHosts(convId, options)) {
+    conversationStopRequests.delete(convId);
+    return;
+  }
+
+  const streaming = useAIStore.getState().conversationStreaming[convId] || { sending: false, pendingQueue: [] };
+  if (streaming.sending) {
+    // 最后一个宿主关闭/改绑时，不能立刻解绑 listener；
+    // 否则 stop/done 等迟到事件会丢失，最后一段响应和终态快照也无法落盘。
+    if (!conversationStopRequests.has(convId)) {
+      conversationStopRequests.add(convId);
+      StopAIGeneration(convId).catch(() => {
+        conversationStopRequests.delete(convId);
+      });
+    }
+    return;
+  }
+
+  cleanupConvListener(convId);
+}
+
 // 所有“首条消息决定标题”的场景都走同一条同步链路，避免首次发送和编辑重发出现两套规则。
 async function updateConversationTitleForMessage(convId: number, content: string) {
-  const title = buildConversationTitle(content);
-  syncConversationTitleLocally(convId, title);
-  try {
-    await UpdateConversationTitle(convId, title);
-  } catch {
-    // ignore — 下一次 fetchConversations 仍会尝试从后端刷新标题
-  }
+  await renameConversationInternal(convId, content, { waitForListRefresh: false });
 }
 
 function shouldSyncConversationTitleBeforeSend(convId: number, content: string) {
@@ -445,16 +903,12 @@ function updateConversation(
       conversationStreaming: newConvStreaming,
     };
   });
-
-  if (updates.messages !== undefined) {
-    // 消息列表发生变化后，补一轮防抖持久化。
-    schedulePersist(convId, true);
-  }
 }
 
 function drainQueue(convId: number) {
   const streaming = useAIStore.getState().conversationStreaming[convId];
   if (!streaming || streaming.pendingQueue.length === 0) return;
+  if (!hasConversationHosts(convId)) return;
 
   const queue = [...streaming.pendingQueue];
   updateConversation(convId, { pendingQueue: [] });
@@ -464,9 +918,9 @@ function drainQueue(convId: number) {
   const newMsgs = [...currentMsgs];
   for (const item of queue) {
     newMsgs.push({
+      id: crypto.randomUUID(),
       role: "user" as const,
       content: item.text,
-      mentions: item.mentions,
       blocks: [],
       streaming: false,
     });
@@ -481,8 +935,8 @@ function drainQueue(convId: number) {
 
 // replay 前先让旧 listener 和 pending queue 失效，避免 stop 产生的迟到事件回放到新分支。
 function prepareConversationForReplay(convId: number) {
+  conversationStopRequests.delete(convId);
   invalidateConvListenerForReplay(convId);
-  cleanupPersistTimer(convId);
   updateConversation(convId, { sending: false, pendingQueue: [] });
 }
 
@@ -492,12 +946,7 @@ function resetConversationForReplay(convId: number, messages: ChatMessage[]) {
 }
 
 // 把“编辑并重发”和“重新生成”统一到一条 replay 流程里，避免两套截断逻辑继续分叉。
-async function replayConversation(
-  convId: number,
-  nextMessages: ChatMessage[],
-  content: string,
-  mentions?: MentionRef[]
-) {
+async function replayConversation(convId: number, nextMessages: ChatMessage[], content: string) {
   const streaming = useAIStore.getState().conversationStreaming[convId] || { sending: false, pendingQueue: [] };
   prepareConversationForReplay(convId);
   if (streaming.sending) {
@@ -507,7 +956,7 @@ async function replayConversation(
   resetConversationForReplay(convId, nextMessages);
 
   if (content.trim()) {
-    await _sendForConversation(convId, content, mentions);
+    await _sendForConversation(convId, content);
     return;
   }
 
@@ -515,12 +964,32 @@ async function replayConversation(
   await _sendForConversation(convId, "");
 }
 
+// 清掉 lastAssistant 上的 retryStatus —— 任何非 retry 事件到达都意味着"流恢复"了
+// （要么是 cago handleRetry 后 ChatStream 重新出 delta，要么是 EventError/stopped/done 终止）。
+// 没有 retryStatus 时不触发额外 setState，避免高频事件产生空 update。
+function clearRetryStatusOnLastAssistant(convId: number) {
+  const msgs = useAIStore.getState().conversationMessages[convId];
+  if (!msgs || msgs.length === 0) return;
+  const lastIdx = msgs.length - 1;
+  const last = msgs[lastIdx];
+  if (last.role !== "assistant" || !last.retryStatus) return;
+  const updated = [...msgs];
+  updated[lastIdx] = { ...last, retryStatus: undefined };
+  updateConversation(convId, { messages: updated });
+}
+
 // 事件处理：核心流式状态机，完全基于 convId
 function handleStreamEvent(convId: number, event: StreamEventData) {
   const currentMsgs = useAIStore.getState().conversationMessages[convId] || [];
   if (!currentMsgs) return;
 
-  // 高频事件缓冲：content/thinking 通过 RAF 合并，每帧最多一次状态更新
+  // 任何非 retry 事件都视为"流恢复"，立即清掉 lastAssistant 上的 retryStatus。
+  // 重试成功后下一帧 content/thinking 一到就把 RetryBanner 关掉，无须 UI 自行判定。
+  if (event.type !== "retry") {
+    clearRetryStatusOnLastAssistant(convId);
+  }
+
+  // 高频事件缓冲：content/thinking 通过固定时间窗合并，避免每帧重解析 Markdown 抢占输入。
   if (event.type === "content" || event.type === "thinking") {
     const buf = getOrCreateStreamBuffer(convId);
     if (event.type === "content") {
@@ -528,13 +997,7 @@ function handleStreamEvent(convId: number, event: StreamEventData) {
     } else {
       buf.thinking += event.content || "";
     }
-    if (buf.raf === null) {
-      buf.raf = requestAnimationFrame(() => {
-        const b = streamBuffers.get(convId);
-        if (b) b.raf = null;
-        flushStreamBuffer(convId);
-      });
-    }
+    scheduleStreamBufferFlush(convId);
     return;
   }
 
@@ -610,6 +1073,7 @@ function handleStreamEvent(convId: number, event: StreamEventData) {
           content: "",
           toolName: event.tool_name || "Tool",
           toolInput: event.tool_input || "",
+          toolCallId: event.tool_call_id,
           status: "running" as const,
         };
 
@@ -650,28 +1114,27 @@ function handleStreamEvent(convId: number, event: StreamEventData) {
             break;
           }
         }
+        // 匹配优先级：toolCallId 精确匹配 > toolName + running > 任意 running
+        const findToolMatch = (arr: ContentBlock[]): number => {
+          if (event.tool_call_id) {
+            for (let i = arr.length - 1; i >= 0; i--) {
+              if (arr[i].type === "tool" && arr[i].toolCallId === event.tool_call_id) return i;
+            }
+          }
+          for (let i = arr.length - 1; i >= 0; i--) {
+            const b = arr[i];
+            if (b.type === "tool" && b.status === "running" && b.toolName === event.tool_name) return i;
+          }
+          for (let i = arr.length - 1; i >= 0; i--) {
+            if (arr[i].type === "tool" && arr[i].status === "running") return i;
+          }
+          return -1;
+        };
+
         if (agentIdx !== -1 && newBlocks[agentIdx].childBlocks) {
           const agentBlock = { ...newBlocks[agentIdx] };
           const children = [...(agentBlock.childBlocks || [])];
-          let matchIdx = -1;
-          for (let i = children.length - 1; i >= 0; i--) {
-            if (
-              children[i].type === "tool" &&
-              children[i].status === "running" &&
-              children[i].toolName === event.tool_name
-            ) {
-              matchIdx = i;
-              break;
-            }
-          }
-          if (matchIdx === -1) {
-            for (let i = children.length - 1; i >= 0; i--) {
-              if (children[i].type === "tool" && children[i].status === "running") {
-                matchIdx = i;
-                break;
-              }
-            }
-          }
+          const matchIdx = findToolMatch(children);
           if (matchIdx !== -1) {
             children[matchIdx] = { ...children[matchIdx], content: event.content || "", status: "completed" };
             agentBlock.childBlocks = children;
@@ -681,23 +1144,7 @@ function handleStreamEvent(convId: number, event: StreamEventData) {
         }
 
         // 顶层工具块匹配
-        let matchIdx = -1;
-        for (let i = newBlocks.length - 1; i >= 0; i--) {
-          const b = newBlocks[i];
-          if (b.type === "tool" && b.status === "running" && b.toolName === event.tool_name) {
-            matchIdx = i;
-            break;
-          }
-        }
-        if (matchIdx === -1) {
-          for (let i = newBlocks.length - 1; i >= 0; i--) {
-            const b = newBlocks[i];
-            if (b.type === "tool" && b.status === "running") {
-              matchIdx = i;
-              break;
-            }
-          }
-        }
+        const matchIdx = findToolMatch(newBlocks);
         if (matchIdx !== -1) {
           newBlocks[matchIdx] = { ...newBlocks[matchIdx], content: event.content || "", status: "completed" };
         }
@@ -723,6 +1170,8 @@ function handleStreamEvent(convId: number, event: StreamEventData) {
           approvalItems: event.items,
           approvalDescription: event.description,
           approvalSessionId: event.session_id,
+          approvalToolName: event.tool_name,
+          approvalPatterns: event.patterns,
         });
         return { ...msg, blocks: newBlocks };
       });
@@ -776,29 +1225,43 @@ function handleStreamEvent(convId: number, event: StreamEventData) {
 
     case "queue_consumed": {
       // 后端在工具调用间隙消费了一条排队消息
-      // 结束当前 assistant 消息，插入 user 消息，开启新 assistant 流
-      // event.content 为后端分离出的展示原文；mentions 从本地队列读取用于高亮 chip
+      // 结束当前 assistant 消息，插入 user 消息（含内联 <mention> XML），开启新 assistant 流
+      //
+      // 注意：cago 一次 drainSteer 可能批量消费多条 Steer，连续 emit N 个
+      // queue_consumed 事件——LLM 此时还没开始新一轮，前一个新开的 assistant
+      // 气泡是空壳。若直接续 streaming:false 留下，UI 会出现 N-1 个空气泡。
+      // 因此遇到"前一个 assistant 没有任何内容"时直接丢弃它再插 user + 新流。
       const curQueue = useAIStore.getState().conversationStreaming[convId]?.pendingQueue || [];
-      const consumedItem = curQueue[0];
-      const nextMsgs = [...msgs];
+      let nextMsgs = [...msgs];
       const lastIdx = nextMsgs.length - 1;
       if (lastIdx >= 0 && nextMsgs[lastIdx].role === "assistant") {
-        nextMsgs[lastIdx] = { ...nextMsgs[lastIdx], streaming: false };
+        const last = nextMsgs[lastIdx];
+        const isEmpty = !last.content && (!last.blocks || last.blocks.length === 0);
+        if (isEmpty) {
+          nextMsgs = nextMsgs.slice(0, lastIdx);
+        } else {
+          nextMsgs[lastIdx] = { ...last, streaming: false };
+        }
       }
       nextMsgs.push({
+        id: crypto.randomUUID(),
         role: "user" as const,
         content: event.content || "",
-        mentions: consumedItem?.mentions,
         blocks: [],
         streaming: false,
       });
       nextMsgs.push({
+        id: crypto.randomUUID(),
         role: "assistant" as const,
         content: "",
         blocks: [],
         streaming: true,
       });
-      const newQueue = curQueue.length > 0 ? curQueue.slice(1) : [];
+      const newQueue = event.queue_id
+        ? curQueue.filter((item) => item.id !== event.queue_id)
+        : curQueue.length > 0
+          ? curQueue.slice(1)
+          : [];
       updateConversation(convId, { messages: nextMsgs, pendingQueue: newQueue });
       // 排队消息被消费（插入新 user + 开启新 assistant）属于低频关键事件，立即落盘。
       persistNow(convId, true);
@@ -835,19 +1298,29 @@ function handleStreamEvent(convId: number, event: StreamEventData) {
       }
 
       // 终态立即落盘
-      cleanupPersistTimer(convId);
       persistConversationSnapshot(convId);
       useAIStore.getState().fetchConversations();
 
-      // 消费队列
-      drainQueue(convId);
+      if (hasConversationHosts(convId)) {
+        drainQueue(convId);
+      } else {
+        cleanupConversationIfUnused(convId);
+      }
       break;
     }
 
     case "retry": {
+      // Attempt 序号放在 content 字段（后端 strconv.Itoa）；解析失败时退化为 0，
+      // RetryBanner 仍能显示 "正在重试..." 文案。
+      const attempt = parseInt(event.content || "0", 10) || 0;
       const updated = updateLastAssistant(msgs, (msg) => ({
         ...msg,
-        blocks: appendText(msg.blocks, `\n\n*${i18n.t("ai.retrying", "重试中")} (${event.content})...*`),
+        retryStatus: {
+          attempt,
+          delayMs: event.retryDelayMs ?? 0,
+          startedAt: Date.now(),
+          cause: event.error,
+        },
       }));
       if (updated) updateConversation(convId, { messages: updated });
       break;
@@ -870,7 +1343,6 @@ function handleStreamEvent(convId: number, event: StreamEventData) {
       }
 
       // 终态立即落盘，保证标题刷新前后都能恢复到完整会话内容。
-      cleanupPersistTimer(convId);
       persistConversationSnapshot(convId);
       // Refresh conversations (title may have updated); sync any open tab bound to this conv.
       useAIStore
@@ -893,16 +1365,26 @@ function handleStreamEvent(convId: number, event: StreamEventData) {
           }
         });
 
-      // 消费队列
-      drainQueue(convId);
+      if (hasConversationHosts(convId)) {
+        drainQueue(convId);
+      } else {
+        cleanupConversationIfUnused(convId);
+      }
       break;
     }
 
     case "error": {
       cleanupStreamBuffer(convId);
+      const { kind, message } = classifyError(event.error);
+      const errBlock: ContentBlock = {
+        type: "error",
+        content: message,
+        errorKind: kind,
+        errorDetail: event.error || "",
+      };
       const updated = updateLastAssistant(msgs, (msg) => ({
         ...msg,
-        blocks: appendText(msg.blocks, `\n\n**Error:** ${event.error}`),
+        blocks: [...msg.blocks, errBlock],
         streaming: false,
       }));
       if (updated) {
@@ -912,57 +1394,121 @@ function handleStreamEvent(convId: number, event: StreamEventData) {
       }
 
       // 错误态同样需要落盘，否则强制重启后会丢掉最后一次失败上下文。
-      cleanupPersistTimer(convId);
       persistConversationSnapshot(convId, true);
+      cleanupConversationIfUnused(convId);
       break;
     }
   }
 }
 
-// 将一组 MentionRef 解析为后端使用的 MentionedAsset（查 assetStore，按 assetId 去重，资产已删除跳过）
-function resolveMentionedAssets(mentions: MentionRef[] | undefined): ai.MentionedAsset[] {
-  if (!mentions || mentions.length === 0) return [];
-  const assetStore = useAssetStore.getState();
-  const groupPathMap = buildGroupPathMap(assetStore.groups);
-  const seen = new Set<number>();
-  const out: ai.MentionedAsset[] = [];
-  for (const mr of mentions) {
-    if (seen.has(mr.assetId)) continue;
-    seen.add(mr.assetId);
-    const asset = assetStore.assets.find((a) => a.ID === mr.assetId);
-    if (!asset) continue;
-    let host = "";
-    try {
-      const cfg = JSON.parse(asset.Config || "{}");
-      host = cfg.host || "";
-    } catch {
-      /* ignore */
+// 把前端塌缩的 ChatMessage 还原成 OpenAI/Anthropic 标准的多条 LLM 消息：
+//   - 一次 user turn 对应一条 ChatMessage(assistant)，blocks 顺序为
+//     thinking_n -> tool_n(含 input/result) -> ... -> text(最终回复)
+//   - 展开后变成：assistant(thinking + tool_calls) + tool(result) + ... + assistant(text)
+//   - 前置约束：tool block 必须带 toolCallId 才能展开；缺失的（旧数据）直接忽略 tool 块，回退到塌缩
+//
+// 这样跨 turn 时 DeepSeek/OpenAI 能看到上一 turn 的中间 tool_calls 与结果，
+// 同时也满足 DeepSeek thinking 模式"带 tool_calls 的 assistant 必须回传 reasoning_content"的强制要求。
+function expandToAPIMessages(messages: ChatMessage[]): runner.Message[] {
+  const out: runner.Message[] = [];
+  for (const m of messages) {
+    if (m.role !== "assistant") {
+      out.push(new runner.Message({ role: m.role, content: m.content }));
+      continue;
     }
-    out.push(
-      new ai.MentionedAsset({
-        assetId: asset.ID,
-        name: asset.Name,
-        type: asset.Type,
-        host,
-        groupPath: asset.GroupID ? groupPathMap.get(asset.GroupID) || "" : "",
-      })
-    );
+
+    // assistant 累加器：在遇到 tool block 时刷出当前 assistant + 跟一条 tool 消息
+    let thinking = "";
+    let text = "";
+    const pendingToolCalls: { id: string; type: string; function: { name: string; arguments: string } }[] = [];
+
+    const flushAssistant = () => {
+      if (!thinking && !text && pendingToolCalls.length === 0) return;
+      const payload: Record<string, unknown> = { role: "assistant", content: text };
+      if (thinking) {
+        payload.thinking = thinking;
+        payload.reasoning_content = thinking;
+      }
+      if (pendingToolCalls.length > 0) payload.tool_calls = pendingToolCalls.slice();
+      out.push(new runner.Message(payload));
+      thinking = "";
+      text = "";
+      pendingToolCalls.length = 0;
+    };
+
+    let canExpand = true; // 老数据若有 tool block 缺 toolCallId，全消息回退到塌缩
+    for (const b of m.blocks) {
+      if (b.type === "tool" && !b.toolCallId) {
+        canExpand = false;
+        break;
+      }
+    }
+
+    if (!canExpand) {
+      // 兼容旧数据：仅发最终 content + thinking 拼接（thinking 拼接也无害）
+      const allThinking = m.blocks
+        .filter((b) => b.type === "thinking")
+        .map((b) => b.content)
+        .join("");
+      const payload: Record<string, unknown> = { role: "assistant", content: m.content };
+      if (allThinking) {
+        payload.thinking = allThinking;
+        payload.reasoning_content = allThinking;
+      }
+      out.push(new runner.Message(payload));
+      continue;
+    }
+
+    for (const b of m.blocks) {
+      if (b.type === "thinking") {
+        thinking += b.content;
+      } else if (b.type === "text") {
+        text += b.content;
+      } else if (b.type === "tool" && b.toolCallId) {
+        pendingToolCalls.push({
+          id: b.toolCallId,
+          type: "function",
+          function: { name: b.toolName || "", arguments: b.toolInput || "{}" },
+        });
+        flushAssistant();
+        out.push(
+          new runner.Message({
+            role: "tool",
+            content: b.content,
+            tool_call_id: b.toolCallId,
+          })
+        );
+      }
+      // approval / agent / error 块不参与 LLM 历史还原，跳过。
+      // error 块的归类标签和原始错误正文是 UI 显示用，不应作为历史 prompt 影响 LLM。
+    }
+    flushAssistant();
   }
   return out;
 }
 
 // 核心发送：完全基于 convId，共享给 sendToTab / sendFromSidebar / regenerate
-async function _sendForConversation(convId: number, content: string, mentions?: MentionRef[]) {
+// content 中可能包含内联 <mention asset-id=...>@name</mention> 标签，前端不再单独维护 mentions 数组。
+async function _sendForConversation(convId: number, content: string) {
+  conversationStopRequests.delete(convId);
   const state = useAIStore.getState();
   const streaming = state.conversationStreaming[convId] || { sending: false, pendingQueue: [] };
 
   // 生成中时排队：推送到后端 runner 队列 + 本地队列（用于 UI 显示）
   if (streaming.sending) {
-    if (content.trim()) {
+    const text = content.trim();
+    if (text) {
+      const queueID = createPendingQueueId();
       updateConversation(convId, {
-        pendingQueue: [...streaming.pendingQueue, { text: content.trim(), mentions }],
+        pendingQueue: [...streaming.pendingQueue, { id: queueID, text }],
       });
-      QueueAIMessage(convId, content.trim(), resolveMentionedAssets(mentions)).catch(() => {});
+      QueueAIMessage(convId, queueID, text).catch(() => {
+        const current = useAIStore.getState().conversationStreaming[convId];
+        if (!current?.pendingQueue.some((item) => item.id === queueID)) return;
+        updateConversation(convId, {
+          pendingQueue: current.pendingQueue.filter((item) => item.id !== queueID),
+        });
+      });
     }
     return;
   }
@@ -977,18 +1523,19 @@ async function _sendForConversation(convId: number, content: string, mentions?: 
     updateConversation(convId, { sending: true });
   } else {
     newMessages.push({
+      id: crypto.randomUUID(),
       role: "user",
       content,
-      mentions,
       blocks: [],
     });
     updateConversation(convId, { messages: newMessages, sending: true });
-    // 用户消息是用户亲手输入的内容，最不应该丢；绕过 300ms 防抖立即落盘。
-    // includeStreaming=true 保留历史未完成 block（如有），与 schedulePersist 的默认行为一致。
+    // 用户消息是用户亲手输入的内容，最不应该丢；发送后立即落盘。
+    // includeStreaming=true 保留历史未完成 block（如有）。
     persistNow(convId, true);
   }
 
   const assistantMsg: ChatMessage = {
+    id: crypto.randomUUID(),
     role: "assistant",
     content: "",
     blocks: [],
@@ -1014,12 +1561,14 @@ async function _sendForConversation(convId: number, content: string, mentions?: 
     handleStreamEvent(convId, event);
   });
 
-  const apiMessages = newMessages.map((m) => {
-    return new ai.Message({
-      role: m.role,
-      content: m.content,
-    });
-  });
+  // 仅 DeepSeek-v4 thinking 模式强制要求"带 tool_calls 的 assistant 必须回传 reasoning_content"，
+  // 且需要历史中间 tool_calls 可见才能跨 turn 继续推理；其他 provider（Anthropic / OpenAI / Kimi 等）
+  // 保持原有塌缩行为，避免引入不必要的回归。
+  const modelName = useAIStore.getState().modelName;
+  const needExpand = modelName.startsWith("deepseek-v4");
+  const apiMessages = needExpand
+    ? expandToAPIMessages(newMessages)
+    : newMessages.map((m) => new runner.Message({ role: m.role, content: m.content }));
 
   // 收集当前 Tab 上下文
   const allTabs = useTabStore.getState().tabs;
@@ -1028,24 +1577,16 @@ async function _sendForConversation(convId: number, content: string, mentions?: 
       (t): t is Tab & { meta: { assetId: number; assetName?: string } } =>
         t.type !== "ai" && t.type !== "page" && t.meta != null && "assetId" in t.meta
     )
-    .map(
-      (t) =>
-        new ai.TabInfo({
-          type: t.type,
-          assetId: t.meta.assetId || 0,
-          assetName: t.meta.assetName || t.label || "",
-        })
-    );
+    .map((t) => {
+      const type = t.type === "query" ? (t.meta as QueryTabMeta).assetType : t.type === "terminal" ? "ssh" : t.type;
+      return new runner.TabInfo({
+        type,
+        assetId: t.meta.assetId || 0,
+        assetName: t.meta.assetName || t.label || "",
+      });
+    });
 
-  // 收集所有 user 消息的 mentions（按 assetId 去重、资产已删除跳过）
-  const allMentions: MentionRef[] = [];
-  for (const m of newMessages) {
-    if (m.role !== "user" || !m.mentions) continue;
-    allMentions.push(...m.mentions);
-  }
-  const mentionedAssets = resolveMentionedAssets(allMentions);
-
-  const aiContext = new ai.AIContext({ openTabs, mentionedAssets });
+  const aiContext = new runner.AIContext({ openTabs });
 
   try {
     await SendAIMessage(convId, apiMessages, aiContext);
@@ -1057,8 +1598,11 @@ async function _sendForConversation(convId: number, content: string, mentions?: 
 
 // === Store ===
 
+// workspace tab 只需要一个空占位："此 tab 已注册"。实际 draft/scrollTop/editTarget 在组件内部管理。
+type WorkspaceTabPlaceholder = Record<string, unknown>;
+
 interface AIState {
-  tabStates: Record<string, TabState>;
+  tabStates: Record<string, WorkspaceTabPlaceholder>;
   conversationMessages: Record<number, ChatMessage[]>;
   conversationStreaming: Record<number, { sending: boolean; pendingQueue: PendingQueueItem[] }>;
 
@@ -1069,27 +1613,23 @@ interface AIState {
   modelName: string;
 
   // 侧边助手状态
-  sidebarConversationId: number | null;
-  sidebarUIState: { inputDraft: string; scrollTop: number };
+  sidebarTabs: SidebarAITab[];
+  activeSidebarTabId: string | null;
 
   // 配置
   checkConfigured: () => Promise<void>;
 
   // 发送
-  send: (content: string, mentions?: MentionRef[]) => Promise<void>;
-  sendToTab: (tabId: string, content: string, mentions?: MentionRef[]) => Promise<void>;
-  sendFromSidebar: (convId: number, content: string, mentions?: MentionRef[]) => Promise<void>;
-  editAndResendConversation: (
-    convId: number,
-    messageIndex: number,
-    content: string,
-    mentions?: MentionRef[]
-  ) => Promise<void>;
+  send: (content: string) => Promise<void>;
+  sendToTab: (tabId: string, content: string) => Promise<void>;
+  sendFromSidebarTab: (tabId: string, content: string) => Promise<void>;
+  editAndResendConversation: (convId: number, messageIndex: number, content: string) => Promise<void>;
   stopConversation: (convId: number) => Promise<void>;
   stopGeneration: (tabId: string) => Promise<void>;
   regenerate: (tabId: string, messageIndex: number) => Promise<void>;
-  removeFromQueue: (convId: number, index: number) => void;
-  clearQueue: (convId: number) => void;
+  regenerateConversation: (convId: number, messageIndex: number) => Promise<void>;
+  removeFromQueue: (convId: number, index: number) => Promise<void>;
+  clearQueue: (convId: number) => Promise<void>;
 
   // Tab 管理 (delegates to tabStore)
   openConversationTab: (conversationId: number) => Promise<string>;
@@ -1098,18 +1638,38 @@ interface AIState {
 
   // 会话管理
   fetchConversations: () => Promise<void>;
+  renameConversation: (id: number, title: string) => Promise<boolean>;
   deleteConversation: (id: number) => Promise<void>;
 
   // 侧边助手 actions
-  bindSidebar: (conversationId: number | null) => void;
-  promoteSidebarToTab: () => Promise<string | null>;
-  createAndBindSidebarConversation: () => Promise<number>;
-  validateSidebarConversation: () => void;
-  setSidebarInputDraft: (draft: string) => void;
+  getActiveSidebarTab: () => SidebarAITab | null;
+  getActiveSidebarConversationId: () => number | null;
+  getSidebarTabState: (tabId: string) => SidebarTabUIState;
+  getSidebarTabStatus: (tabId: string) => SidebarTabStatus;
+  openNewSidebarTab: (options?: { activate?: boolean }) => string;
+  bindSidebarTabToConversation: (tabId: string, conversationId: number, options?: { activate?: boolean }) => string;
+  openSidebarConversationInSidebar: (
+    conversationId: number,
+    options?: { activate?: boolean; reuseIfOpen?: boolean }
+  ) => string;
+  activateSidebarTab: (tabId: string) => void;
+  closeSidebarTab: (tabId: string) => void;
+  promoteSidebarToTab: (tabId?: string) => Promise<string | null>;
+  validateSidebarTabs: () => void;
+  setSidebarTabInputDraft: (tabId: string, draft: { content: string }) => void;
+  setSidebarTabScrollTop: (tabId: string, scrollTop: number) => void;
+  setSidebarTabEditTarget: (
+    tabId: string,
+    editTarget: {
+      conversationId: number;
+      messageIndex: number;
+      draft: { content: string };
+    } | null
+  ) => void;
+  stopSidebarTab: (tabId: string) => Promise<void>;
 
   // 查询
   isAnySending: () => boolean;
-  getTabState: (tabId: string) => TabState;
 
   // NEW — 派生 getter
   getMessagesByConversationId: (convId: number) => ChatMessage[];
@@ -1117,6 +1677,19 @@ interface AIState {
 }
 
 export const useAIStore = create<AIState>((set, get) => {
+  const initialSidebarState = loadInitialSidebarState();
+
+  // 侧边 tab uiState 的浅 merge：只替换 patch 里出现的字段，其余保持原引用。
+  // 引用稳定性很重要——仅改动 inputDraft 时，editTarget/scrollTop 的引用不变，
+  // 使得按 editTarget 订阅的组件不会因键盘输入而重渲染。
+  const patchSidebarTabUiState = (tabId: string, patch: Partial<SidebarTabUIState>) => {
+    set((state) => ({
+      sidebarTabs: state.sidebarTabs.map((tab) =>
+        tab.id === tabId ? { ...tab, uiState: { ...tab.uiState, ...patch } } : tab
+      ),
+    }));
+  };
+
   return {
     tabStates: {},
     conversationMessages: {},
@@ -1127,11 +1700,8 @@ export const useAIStore = create<AIState>((set, get) => {
     providerName: "",
     modelName: "",
 
-    sidebarConversationId: (() => {
-      const saved = localStorage.getItem("ai_sidebar_conversation_id");
-      return saved ? parseInt(saved, 10) : null;
-    })(),
-    sidebarUIState: { inputDraft: localStorage.getItem("ai_sidebar_input_draft") || "", scrollTop: 0 },
+    sidebarTabs: initialSidebarState.tabs,
+    activeSidebarTabId: initialSidebarState.activeSidebarTabId,
 
     checkConfigured: async () => {
       try {
@@ -1147,40 +1717,77 @@ export const useAIStore = create<AIState>((set, get) => {
     },
 
     fetchConversations: async () => {
+      const request = beginConversationListRequest();
       try {
         const convs = await ListConversations();
-        set({ conversations: convs || [] });
-        get().validateSidebarConversation();
-        // 启动时 sidebarConversationId 从 localStorage 恢复，但消息未加载。
-        // 在验证通过（conv 仍存在）后触发一次历史消息拉取。
-        const sidebarId = get().sidebarConversationId;
-        if (sidebarId != null) {
-          void ensureConversationMessagesLoaded(sidebarId);
+        if (!canApplyConversationListRequest(request)) {
+          return;
         }
+        markConversationListRequestApplied(request);
+        applyConversationListSnapshot(convs || []);
       } catch {
-        set({ conversations: [] });
+        // 临时失败保留现有列表，避免把刚完成的本地乐观标题或会话条目清空。
+        if (!canApplyConversationListRequest(request)) {
+          return;
+        }
       }
+    },
+
+    renameConversation: async (id: number, title: string) => {
+      return renameConversationInternal(id, title, { waitForListRefresh: true });
     },
 
     deleteConversation: async (id: number) => {
       try {
         await DeleteConversation(id);
-        // If there's an open tab for this conversation, close it
         const tabStore = useTabStore.getState();
-        const tab = tabStore.tabs.find((t) => t.type === "ai" && (t.meta as AITabMeta).conversationId === id);
-        if (tab) {
-          tabStore.closeTab(tab.id);
-        }
+        const openAITabIds = tabStore.tabs
+          .filter((tab) => tab.type === "ai" && (tab.meta as AITabMeta).conversationId === id)
+          .map((tab) => tab.id);
 
-        // 侧边绑定联动：若侧边仍持有该会话，清除之
-        if (get().sidebarConversationId === id) {
-          get().bindSidebar(null);
+        invalidateConversationListRequests();
+
+        set((state) => {
+          const nextSidebarTabs = state.sidebarTabs.filter((tab) => tab.conversationId !== id);
+          const activeSidebarTabIndex = state.sidebarTabs.findIndex((tab) => tab.id === state.activeSidebarTabId);
+          const activeSidebarTabWasRemoved =
+            activeSidebarTabIndex !== -1 && state.sidebarTabs[activeSidebarTabIndex]?.conversationId === id;
+          const findFallbackSidebarTabId = () => {
+            if (activeSidebarTabIndex === -1) {
+              return nextSidebarTabs[0]?.id ?? null;
+            }
+            // 以原数组里 active tab 的位置为基准，先向右再向左扫描第一个未被删除的 tab，
+            // 避免 filter 后用旧 index 去索引新数组带来的偏移错误。
+            for (let i = activeSidebarTabIndex + 1; i < state.sidebarTabs.length; i += 1) {
+              const candidate = state.sidebarTabs[i];
+              if (candidate && candidate.conversationId !== id) return candidate.id;
+            }
+            for (let i = activeSidebarTabIndex - 1; i >= 0; i -= 1) {
+              const candidate = state.sidebarTabs[i];
+              if (candidate && candidate.conversationId !== id) return candidate.id;
+            }
+            return null;
+          };
+          const nextActiveSidebarTabId = nextSidebarTabs.some((tab) => tab.id === state.activeSidebarTabId)
+            ? state.activeSidebarTabId
+            : activeSidebarTabWasRemoved
+              ? findFallbackSidebarTabId()
+              : (nextSidebarTabs[0]?.id ?? null);
+          const { [id]: _removedMessages, ...conversationMessages } = state.conversationMessages;
+          const { [id]: _removedStreaming, ...conversationStreaming } = state.conversationStreaming;
+          return {
+            conversations: state.conversations.filter((conv) => conv.ID !== id),
+            sidebarTabs: nextSidebarTabs,
+            activeSidebarTabId: nextActiveSidebarTabId,
+            conversationMessages,
+            conversationStreaming,
+          };
+        });
+
+        for (const tabId of openAITabIds) {
+          tabStore.closeTab(tabId);
         }
-        // 清理最近绑定记录，避免关闭 Tab 时误恢复已删除会话
-        const lastBound = localStorage.getItem("ai_sidebar_last_bound");
-        if (lastBound && parseInt(lastBound, 10) === id) {
-          localStorage.removeItem("ai_sidebar_last_bound");
-        }
+        cleanupConvListener(id);
 
         await get().fetchConversations();
       } catch (e) {
@@ -1190,63 +1797,214 @@ export const useAIStore = create<AIState>((set, get) => {
 
     // === 侧边助手 ===
 
-    bindSidebar: (conversationId: number | null) => {
-      set({ sidebarConversationId: conversationId });
-      if (conversationId === null) {
-        localStorage.removeItem("ai_sidebar_conversation_id");
-      } else {
-        localStorage.setItem("ai_sidebar_conversation_id", String(conversationId));
-        localStorage.setItem("ai_sidebar_last_bound", String(conversationId));
-        // 侧边绑定的会话需要立即把历史消息加载进来，否则 AIChatContent 读到空数组会显示"无消息"。
-        // fire-and-forget：helper 内部做了"已加载则跳过"判断。
-        void ensureConversationMessagesLoaded(conversationId);
+    getActiveSidebarTab: () => {
+      const { sidebarTabs, activeSidebarTabId } = get();
+      return sidebarTabs.find((tab) => tab.id === activeSidebarTabId) ?? null;
+    },
+
+    getActiveSidebarConversationId: () => {
+      return get().getActiveSidebarTab()?.conversationId ?? null;
+    },
+
+    getSidebarTabState: (tabId: string) => {
+      return get().sidebarTabs.find((tab) => tab.id === tabId)?.uiState ?? createDefaultSidebarUiState();
+    },
+
+    getSidebarTabStatus: (tabId: string) => {
+      const tab = get().sidebarTabs.find((item) => item.id === tabId);
+      return getConversationStatus(tab?.conversationId ?? null);
+    },
+
+    openNewSidebarTab: (options) => {
+      // 已经存在空白会话宿主时直接跳转，避免重复创建未使用的新会话 tab。
+      const blankTab = get().sidebarTabs.find((tab) => tab.conversationId == null);
+      if (blankTab) {
+        if (options?.activate !== false || !get().activeSidebarTabId) {
+          get().activateSidebarTab(blankTab.id);
+        }
+        return blankTab.id;
       }
-    },
-
-    createAndBindSidebarConversation: async () => {
-      const conv = await CreateConversation();
+      const nextTab = createSidebarTab();
       set((state) => ({
-        conversations: [conv, ...state.conversations],
-        conversationMessages: { ...state.conversationMessages, [conv.ID]: [] },
-        conversationStreaming: {
-          ...state.conversationStreaming,
-          [conv.ID]: { sending: false, pendingQueue: [] },
-        },
+        sidebarTabs: [...state.sidebarTabs, nextTab],
+        activeSidebarTabId: resolveNextActiveId(state.activeSidebarTabId, nextTab.id, options?.activate),
       }));
-      get().bindSidebar(conv.ID);
-      return conv.ID;
+      return nextTab.id;
     },
 
-    promoteSidebarToTab: async () => {
-      const convId = get().sidebarConversationId;
-      if (convId == null) return null;
-      const tabId = await get().openConversationTab(convId);
+    bindSidebarTabToConversation: (tabId: string, conversationId: number, options) => {
+      const targetTab = get().sidebarTabs.find((tab) => tab.id === tabId);
+      if (!targetTab) {
+        return get().openSidebarConversationInSidebar(conversationId, {
+          activate: options?.activate,
+          reuseIfOpen: true,
+        });
+      }
+
+      // 当前 blank tab 绑定到一个已在侧边打开的会话时，直接复用现有宿主，
+      // 避免同一个 conversationId 在侧边产生重复 tab。
+      const reusedTab = get().sidebarTabs.find((tab) => tab.id !== tabId && tab.conversationId === conversationId);
+      if (reusedTab) {
+        if (options?.activate !== false || !get().activeSidebarTabId) {
+          get().activateSidebarTab(reusedTab.id);
+        }
+        return reusedTab.id;
+      }
+
+      const previousConversationId = targetTab.conversationId;
+      const title = get().conversations.find((conv) => conv.ID === conversationId)?.Title || targetTab.title;
+      set((state) => ({
+        sidebarTabs: state.sidebarTabs.map((tab) =>
+          tab.id === tabId
+            ? {
+                ...tab,
+                conversationId,
+                title,
+                uiState: createDefaultSidebarUiState(),
+              }
+            : tab
+        ),
+        activeSidebarTabId: resolveNextActiveId(state.activeSidebarTabId, tabId, options?.activate),
+      }));
+      conversationStopRequests.delete(conversationId);
+      void ensureConversationMessagesLoaded(conversationId);
+      if (previousConversationId != null && previousConversationId !== conversationId) {
+        cleanupConversationIfUnused(previousConversationId, { ignoreSidebarTabId: tabId });
+      }
       return tabId;
     },
 
-    validateSidebarConversation: () => {
-      const convId = get().sidebarConversationId;
-      if (convId == null) return;
-      const exists = get().conversations.some((c) => c.ID === convId);
-      if (!exists) {
-        get().bindSidebar(null);
-        localStorage.removeItem("ai_sidebar_last_bound");
+    openSidebarConversationInSidebar: (conversationId: number, options) => {
+      const existingTab = get().sidebarTabs.find((tab) => tab.conversationId === conversationId);
+      if (existingTab && options?.reuseIfOpen !== false) {
+        if (options?.activate !== false || !get().activeSidebarTabId) {
+          get().activateSidebarTab(existingTab.id);
+        }
+        void ensureConversationMessagesLoaded(conversationId);
+        return existingTab.id;
+      }
+
+      const title = get().conversations.find((conv) => conv.ID === conversationId)?.Title || getDefaultSidebarTitle();
+      const nextTab = createSidebarTab({ conversationId, title });
+      set((state) => ({
+        sidebarTabs: [...state.sidebarTabs, nextTab],
+        activeSidebarTabId: resolveNextActiveId(state.activeSidebarTabId, nextTab.id, options?.activate),
+      }));
+      conversationStopRequests.delete(conversationId);
+      void ensureConversationMessagesLoaded(conversationId);
+      return nextTab.id;
+    },
+
+    activateSidebarTab: (tabId: string) => {
+      if (!get().sidebarTabs.some((tab) => tab.id === tabId)) return;
+      set({ activeSidebarTabId: tabId });
+    },
+
+    closeSidebarTab: (tabId: string) => {
+      const state = get();
+      const index = state.sidebarTabs.findIndex((tab) => tab.id === tabId);
+      if (index === -1) return;
+
+      const closingTab = state.sidebarTabs[index];
+      if (closingTab.conversationId != null) {
+        // 侧边宿主关闭前先把当前会话快照刷盘；
+        // 但真正的 listener 回收要等到确认没有其它宿主仍引用该会话。
+        persistConversationSnapshot(closingTab.conversationId, true);
+      }
+
+      set((currentState) => {
+        const nextSidebarTabs = currentState.sidebarTabs.filter((tab) => tab.id !== tabId);
+        let nextActiveSidebarTabId = currentState.activeSidebarTabId;
+        if (currentState.activeSidebarTabId === tabId) {
+          // 关闭当前 tab 时优先激活右邻居，其次左邻居，最后退化到首个剩余 tab。
+          nextActiveSidebarTabId =
+            nextSidebarTabs[index]?.id ?? nextSidebarTabs[index - 1]?.id ?? nextSidebarTabs[0]?.id ?? null;
+        }
+        return {
+          sidebarTabs: nextSidebarTabs,
+          activeSidebarTabId: nextActiveSidebarTabId,
+        };
+      });
+
+      if (closingTab.conversationId != null) {
+        cleanupConversationIfUnused(closingTab.conversationId, { ignoreSidebarTabId: tabId });
       }
     },
 
-    setSidebarInputDraft: (draft: string) => {
-      set({ sidebarUIState: { ...get().sidebarUIState, inputDraft: draft } });
-      localStorage.setItem("ai_sidebar_input_draft", draft);
+    promoteSidebarToTab: async (tabId?: string) => {
+      const targetTab = tabId
+        ? (get().sidebarTabs.find((tab) => tab.id === tabId) ?? null)
+        : get().getActiveSidebarTab();
+      if (!targetTab?.conversationId) return null;
+      return get().openConversationTab(targetTab.conversationId);
+    },
+
+    validateSidebarTabs: () => {
+      const conversationsById = new Map(
+        get().conversations.map((conversation) => [conversation.ID, conversation] as const)
+      );
+      const removedConversationIds = get()
+        .sidebarTabs.filter((tab) => tab.conversationId != null && !conversationsById.has(tab.conversationId))
+        .map((tab) => tab.conversationId)
+        .filter((conversationId): conversationId is number => conversationId != null);
+
+      set((state) => {
+        const nextSidebarTabs = state.sidebarTabs
+          .filter((tab) => tab.conversationId == null || conversationsById.has(tab.conversationId))
+          .map((tab) => {
+            if (tab.conversationId == null) return tab;
+            const conversation = conversationsById.get(tab.conversationId);
+            return conversation && conversation.Title !== tab.title ? { ...tab, title: conversation.Title } : tab;
+          });
+        return {
+          sidebarTabs: nextSidebarTabs,
+          activeSidebarTabId: nextSidebarTabs.some((tab) => tab.id === state.activeSidebarTabId)
+            ? state.activeSidebarTabId
+            : (nextSidebarTabs[0]?.id ?? null),
+        };
+      });
+
+      for (const conversationId of new Set(removedConversationIds)) {
+        cleanupConversationIfUnused(conversationId);
+      }
+    },
+
+    setSidebarTabInputDraft: (tabId: string, draft) => {
+      patchSidebarTabUiState(tabId, {
+        inputDraft: {
+          content: draft.content ?? "",
+        },
+      });
+    },
+
+    setSidebarTabScrollTop: (tabId: string, scrollTop: number) => {
+      patchSidebarTabUiState(tabId, { scrollTop });
+    },
+
+    setSidebarTabEditTarget: (tabId: string, editTarget) => {
+      patchSidebarTabUiState(tabId, {
+        editTarget: editTarget
+          ? {
+              conversationId: editTarget.conversationId,
+              messageIndex: editTarget.messageIndex,
+              draft: {
+                content: editTarget.draft.content ?? "",
+              },
+            }
+          : null,
+      });
+    },
+
+    stopSidebarTab: async (tabId: string) => {
+      const conversationId = get().sidebarTabs.find((tab) => tab.id === tabId)?.conversationId;
+      if (conversationId != null) {
+        await get().stopConversation(conversationId);
+      }
     },
 
     // === Tab 管理 ===
 
     openConversationTab: async (conversationId: number) => {
-      // Single-host invariant: evict sidebar when it holds the same conv
-      if (get().sidebarConversationId === conversationId) {
-        get().bindSidebar(null);
-      }
-
       const tabStore = useTabStore.getState();
 
       // If already open, activate
@@ -1262,43 +2020,48 @@ export const useAIStore = create<AIState>((set, get) => {
       const state = get();
       const conv = state.conversations.find((c) => c.ID === conversationId);
       const title = conv?.Title || "对话";
+      let loadedMessages = state.conversationMessages[conversationId];
 
-      // Load messages（只读加载，避免后端 currentConversationID 被多 Tab 竞争覆盖）
-      try {
-        const displayMsgs = await LoadConversationMessages(conversationId);
-        const messages = convertDisplayMessages(displayMsgs);
-
-        // Open tab in tabStore
-        tabStore.openTab({
-          id: tabId,
-          type: "ai",
-          label: title,
-          meta: { type: "ai", conversationId, title },
-        });
-
-        // Register empty UI placeholder entry + write to conversation-keyed stores
-        set((state) => ({
-          tabStates: {
-            ...state.tabStates,
-            [tabId]: {},
-          },
-          conversationMessages: { ...state.conversationMessages, [conversationId]: messages },
-          conversationStreaming: {
-            ...state.conversationStreaming,
-            [conversationId]: { sending: false, pendingQueue: [] },
-          },
-        }));
-
-        return tabId;
-      } catch (e) {
-        console.error("打开会话失败:", e);
-        throw e;
+      // 同一 conversation 可能已经在侧边栏 live streaming。
+      // 主工作区打开时优先复用内存里的消息/队列状态，避免重新加载后把 pendingQueue 和 sending 状态清空。
+      if (loadedMessages === undefined) {
+        try {
+          const displayMsgs = await LoadConversationMessages(conversationId);
+          loadedMessages = convertDisplayMessages(displayMsgs);
+        } catch (e) {
+          console.error("打开会话失败:", e);
+          throw e;
+        }
       }
+
+      conversationStopRequests.delete(conversationId);
+      tabStore.openTab({
+        id: tabId,
+        type: "ai",
+        label: title,
+        meta: { type: "ai", conversationId, title },
+      });
+
+      set((currentState) => ({
+        tabStates: {
+          ...currentState.tabStates,
+          [tabId]: {},
+        },
+        conversationMessages:
+          currentState.conversationMessages[conversationId] !== undefined || loadedMessages === undefined
+            ? currentState.conversationMessages
+            : { ...currentState.conversationMessages, [conversationId]: loadedMessages },
+        conversationStreaming: currentState.conversationStreaming[conversationId]
+          ? currentState.conversationStreaming
+          : { ...currentState.conversationStreaming, [conversationId]: { sending: false, pendingQueue: [] } },
+      }));
+
+      return tabId;
     },
 
     openNewConversationTab: () => {
       const tabId = `ai-new-${Date.now()}`;
-      const title = i18n.t("ai.newConversation", "新对话");
+      const title = i18n.t("ai.newConversation");
 
       useTabStore.getState().openTab({
         id: tabId,
@@ -1319,15 +2082,15 @@ export const useAIStore = create<AIState>((set, get) => {
 
     // === 向后兼容 ===
 
-    send: async (content: string, mentions?: MentionRef[]) => {
+    send: async (content: string) => {
       const tabStore = useTabStore.getState();
       const activeTab = tabStore.tabs.find((t) => t.id === tabStore.activeTabId && t.type === "ai");
       if (!activeTab) {
         const newTabId = get().openNewConversationTab();
-        await get().sendToTab(newTabId, content, mentions);
+        await get().sendToTab(newTabId, content);
         return;
       }
-      await get().sendToTab(activeTab.id, content, mentions);
+      await get().sendToTab(activeTab.id, content);
     },
 
     clear: () => {
@@ -1340,7 +2103,7 @@ export const useAIStore = create<AIState>((set, get) => {
 
     // === 核心发送 ===
 
-    sendToTab: async (tabId: string, content: string, mentions?: MentionRef[]) => {
+    sendToTab: async (tabId: string, content: string) => {
       const state = get();
       const tabState = state.tabStates[tabId];
       if (!tabState) return;
@@ -1355,44 +2118,87 @@ export const useAIStore = create<AIState>((set, get) => {
 
       // Ensure tab has a conversation ID *before* writing any message state —
       // conversationMessages / conversationStreaming are keyed by convId.
-      let createdConversation = false;
-      if (!convId) {
-        try {
-          const conv = await CreateConversation();
-          convId = conv.ID;
-          createdConversation = true;
+      if (convId == null) {
+        const newId = await createConversationForEmptyHost((conv) => {
           const curTab = useTabStore.getState().tabs.find((t) => t.id === tabId);
           useTabStore.getState().updateTab(tabId, {
-            meta: { type: "ai", conversationId: convId, title: curTab?.label || "对话" },
+            meta: {
+              type: "ai",
+              conversationId: conv.ID,
+              title: curTab?.label || conv.Title || DEFAULT_CONVERSATION_TITLE,
+            },
           });
-        } catch {
-          return;
-        }
+          set((currentState) => ({
+            conversations: currentState.conversations.some((item) => item.ID === conv.ID)
+              ? currentState.conversations
+              : [conv, ...currentState.conversations],
+            conversationMessages: currentState.conversationMessages[conv.ID]
+              ? currentState.conversationMessages
+              : { ...currentState.conversationMessages, [conv.ID]: [] },
+            conversationStreaming: currentState.conversationStreaming[conv.ID]
+              ? currentState.conversationStreaming
+              : {
+                  ...currentState.conversationStreaming,
+                  [conv.ID]: { sending: false, pendingQueue: [] },
+                },
+          }));
+        });
+        if (newId == null) return;
+        convId = newId;
       }
 
       if (shouldSyncConversationTitleBeforeSend(convId, content)) {
         await updateConversationTitleForMessage(convId, content);
       }
-      if (createdConversation) {
-        void get().fetchConversations();
-      }
 
-      await _sendForConversation(convId, content, mentions);
+      await _sendForConversation(convId, content);
     },
 
-    sendFromSidebar: async (convId: number, content: string, mentions?: MentionRef[]) => {
+    sendFromSidebarTab: async (tabId: string, content: string) => {
+      const sidebarTab = get().sidebarTabs.find((tab) => tab.id === tabId);
+      if (!sidebarTab) return;
+      let convId = sidebarTab.conversationId;
+      const existingMessages = convId != null ? get().conversationMessages[convId] || [] : [];
+      if (!content.trim() && existingMessages.length === 0) return;
+
+      if (convId == null) {
+        const newId = await createConversationForEmptyHost((conv) => {
+          set((state) => ({
+            conversations: state.conversations.some((item) => item.ID === conv.ID)
+              ? state.conversations
+              : [conv, ...state.conversations],
+            conversationMessages: state.conversationMessages[conv.ID]
+              ? state.conversationMessages
+              : { ...state.conversationMessages, [conv.ID]: [] },
+            conversationStreaming: state.conversationStreaming[conv.ID]
+              ? state.conversationStreaming
+              : {
+                  ...state.conversationStreaming,
+                  [conv.ID]: { sending: false, pendingQueue: [] },
+                },
+            sidebarTabs: state.sidebarTabs.map((tab) =>
+              tab.id === tabId
+                ? {
+                    ...tab,
+                    conversationId: conv.ID,
+                    title: conv.Title || tab.title,
+                    uiState: createDefaultSidebarUiState(),
+                  }
+                : tab
+            ),
+          }));
+        });
+        if (newId == null) return;
+        convId = newId;
+      }
+
       if (shouldSyncConversationTitleBeforeSend(convId, content)) {
         await updateConversationTitleForMessage(convId, content);
       }
-      await _sendForConversation(convId, content, mentions);
+      await _sendForConversation(convId, content);
     },
 
-    editAndResendConversation: async (
-      convId: number,
-      messageIndex: number,
-      content: string,
-      mentions?: MentionRef[]
-    ) => {
+    editAndResendConversation: async (convId: number, messageIndex: number, content: string) => {
       if (!content.trim()) return;
 
       const messages = get().conversationMessages[convId] || [];
@@ -1403,14 +2209,15 @@ export const useAIStore = create<AIState>((set, get) => {
       if (!target || target.role !== "user") return;
 
       const firstUserIndex = messages.findIndex((message) => message.role === "user");
-      if (firstUserIndex === messageIndex) {
-        // 首条 user message 同时决定会话标题，编辑后要先同步标题再 replay。
+      if (firstUserIndex === messageIndex && shouldAutoRenameAfterFirstTurnEdit(convId, target.content)) {
+        // 只有当前标题仍等于旧首条规范化标题时，首条编辑才继续自动改名；
+        // 若用户已手工改名，则保留用户自定义标题。
         await updateConversationTitleForMessage(convId, content);
       }
 
       const truncated = messages.slice(0, messageIndex);
       // 从被编辑消息之前的稳定历史重新发送，确保后续分支完全替换。
-      await replayConversation(convId, truncated, content, mentions);
+      await replayConversation(convId, truncated, content);
     },
 
     stopConversation: async (convId: number) => {
@@ -1439,6 +2246,10 @@ export const useAIStore = create<AIState>((set, get) => {
       const convId = (tab.meta as AITabMeta).conversationId;
       if (convId == null) return;
 
+      await get().regenerateConversation(convId, messageIndex);
+    },
+
+    regenerateConversation: async (convId: number, messageIndex: number) => {
       const messages = get().conversationMessages[convId] || [];
       if (messageIndex < 0 || messageIndex >= messages.length) return;
 
@@ -1446,15 +2257,37 @@ export const useAIStore = create<AIState>((set, get) => {
       await replayConversation(convId, truncated, "");
     },
 
-    removeFromQueue: (convId: number, index: number) => {
+    removeFromQueue: async (convId: number, index: number) => {
       const streaming = get().conversationStreaming[convId];
       if (!streaming) return;
-      const newQueue = streaming.pendingQueue.filter((_, i) => i !== index);
-      updateConversation(convId, { pendingQueue: newQueue });
+      const item = streaming.pendingQueue[index];
+      if (!item) return;
+      let removed: boolean;
+      try {
+        removed = await RemoveQueuedAIMessage(convId, item.id);
+      } catch {
+        return;
+      }
+      if (!removed) return;
+      const current = get().conversationStreaming[convId];
+      if (!current) return;
+      updateConversation(convId, { pendingQueue: current.pendingQueue.filter((queued) => queued.id !== item.id) });
     },
 
-    clearQueue: (convId: number) => {
-      updateConversation(convId, { pendingQueue: [] });
+    clearQueue: async (convId: number) => {
+      const streaming = get().conversationStreaming[convId];
+      if (!streaming || streaming.pendingQueue.length === 0) return;
+      let removedIDs: string[];
+      try {
+        removedIDs = (await ClearQueuedAIMessages(convId)) ?? [];
+      } catch {
+        return;
+      }
+      if (removedIDs.length === 0) return;
+      const removed = new Set(removedIDs);
+      const current = get().conversationStreaming[convId];
+      if (!current) return;
+      updateConversation(convId, { pendingQueue: current.pendingQueue.filter((item) => !removed.has(item.id)) });
     },
 
     // === 查询 ===
@@ -1462,10 +2295,6 @@ export const useAIStore = create<AIState>((set, get) => {
     isAnySending: () => {
       const { conversationStreaming } = get();
       return Object.values(conversationStreaming).some((s) => s.sending);
-    },
-
-    getTabState: (tabId: string) => {
-      return get().tabStates[tabId] || {};
     },
 
     getMessagesByConversationId: (convId: number) => {
@@ -1478,6 +2307,67 @@ export const useAIStore = create<AIState>((set, get) => {
   };
 });
 
+const SIDEBAR_PERSIST_DEBOUNCE_MS = 300;
+let sidebarPersistTimer: ReturnType<typeof setTimeout> | null = null;
+let sidebarPersistPending: { tabs: SidebarAITab[]; activeSidebarTabId: string | null } | null = null;
+
+function flushSidebarPersist() {
+  if (sidebarPersistTimer) {
+    clearTimeout(sidebarPersistTimer);
+    sidebarPersistTimer = null;
+  }
+  if (sidebarPersistPending) {
+    const { tabs, activeSidebarTabId } = sidebarPersistPending;
+    sidebarPersistPending = null;
+    persistSidebarTabs(tabs, activeSidebarTabId);
+  }
+}
+
+function scheduleSidebarPersist(tabs: SidebarAITab[], activeSidebarTabId: string | null) {
+  sidebarPersistPending = { tabs, activeSidebarTabId };
+  if (sidebarPersistTimer) return;
+  sidebarPersistTimer = setTimeout(() => {
+    sidebarPersistTimer = null;
+    flushSidebarPersist();
+  }, SIDEBAR_PERSIST_DEBOUNCE_MS);
+}
+
+function didSidebarStructureChange(next: SidebarAITab[], prev: SidebarAITab[]) {
+  if (next.length !== prev.length) return true;
+  for (let i = 0; i < next.length; i += 1) {
+    const a = next[i];
+    const b = prev[i];
+    if (a.id !== b.id || a.conversationId !== b.conversationId || a.title !== b.title) return true;
+  }
+  return false;
+}
+
+persistSidebarTabs(useAIStore.getState().sidebarTabs, useAIStore.getState().activeSidebarTabId);
+useAIStore.subscribe((state, prevState) => {
+  if (state.sidebarTabs === prevState.sidebarTabs && state.activeSidebarTabId === prevState.activeSidebarTabId) {
+    return;
+  }
+  // 结构性变更（增删 tab/切换激活）需要立刻落盘，避免刷新丢失；
+  // 仅 uiState 字段变化（滚动位置、输入草稿）走 debounce，避免高频 localStorage 写入阻塞主线程。
+  if (
+    state.activeSidebarTabId !== prevState.activeSidebarTabId ||
+    didSidebarStructureChange(state.sidebarTabs, prevState.sidebarTabs)
+  ) {
+    flushSidebarPersist();
+    persistSidebarTabs(state.sidebarTabs, state.activeSidebarTabId);
+  } else {
+    scheduleSidebarPersist(state.sidebarTabs, state.activeSidebarTabId);
+  }
+});
+
+if (typeof window !== "undefined") {
+  window.addEventListener("beforeunload", flushSidebarPersist);
+  window.addEventListener("pagehide", flushSidebarPersist);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") flushSidebarPersist();
+  });
+}
+
 // === Close Hook: clean up when tabStore closes an AI tab ===
 
 registerTabCloseHook((tab) => {
@@ -1489,28 +2379,14 @@ registerTabCloseHook((tab) => {
     // 关闭标签前补一次最终快照，避免最后一段对话未落盘。
     // 关闭时流式输出可能仍在进行（streaming=true），必须传 includeStreaming=true 才能
     // 把最后一段 assistant 消息一起落盘；toDisplayMessages 会把未完结的 block 归一为 cancelled。
-    cleanupPersistTimer(meta.conversationId);
     persistConversationSnapshot(meta.conversationId, true);
-    cleanupConvListener(meta.conversationId);
+    cleanupConversationIfUnused(meta.conversationId, { ignoreMainTabId: tab.id });
   }
 
   useAIStore.setState((s) => {
     const { [tab.id]: _, ...newTabStates } = s.tabStates;
     return { tabStates: newTabStates };
   });
-
-  // 单宿主不变量：若关闭的 Tab 对应的 conversation 是最近的侧边绑定，且当前侧边为空，
-  // 则恢复侧边绑定，使得会话继续以侧边形态存在。
-  if (meta.conversationId) {
-    const lastBound = localStorage.getItem("ai_sidebar_last_bound");
-    if (
-      lastBound &&
-      parseInt(lastBound, 10) === meta.conversationId &&
-      useAIStore.getState().sidebarConversationId == null
-    ) {
-      useAIStore.getState().bindSidebar(meta.conversationId);
-    }
-  }
 });
 
 // === Restore Hook: load AI settings and restore conversation tabs ===
@@ -1591,7 +2467,6 @@ async function flushAllConversationsAsync(): Promise<void> {
   for (const convIdStr of Object.keys(allMsgs)) {
     const convId = Number(convIdStr);
     if (!convId) continue;
-    cleanupPersistTimer(convId);
     const msgs = allMsgs[convId];
     if (!msgs) continue;
     promises.push(SaveConversationMessages(convId, toDisplayMessages(msgs, true)).catch(() => {}));

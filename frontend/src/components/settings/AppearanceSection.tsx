@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   cn,
@@ -7,7 +7,10 @@ import {
   Label,
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
+  SelectSeparator,
   SelectTrigger,
   SelectValue,
   Card,
@@ -15,11 +18,21 @@ import {
   CardHeader,
   CardTitle,
   Separator,
+  Switch,
 } from "@opskat/ui";
 import { useTheme, useResolvedTheme } from "@/components/theme-provider";
 import { Plus, Pencil, Trash2 } from "lucide-react";
-import { useTerminalThemeStore } from "@/stores/terminalThemeStore";
+import { useTerminalThemeStore, SCROLLBACK_MIN, SCROLLBACK_MAX } from "@/stores/terminalThemeStore";
 import { builtinThemes, defaultLightTheme, defaultDarkTheme, TerminalTheme } from "@/data/terminalThemes";
+import {
+  CUSTOM_TERMINAL_FONT_PRESET_ID,
+  DEFAULT_TERMINAL_FONT_PRESET_ID,
+  buildTerminalFontGroups,
+  loadInstalledFonts,
+  quoteFamilyName,
+  resolveDefaultFontPrimary,
+  resolveFontPresetOrphan,
+} from "@/data/terminalFonts";
 import { TerminalThemeEditor } from "@/components/settings/TerminalThemeEditor";
 
 export function AppearanceSection() {
@@ -36,11 +49,11 @@ export function AppearanceSection() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-base">{t("theme.toggle")}</CardTitle>
+        <CardTitle className="text-base">{t("appearance.title")}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="grid gap-2">
-          <Label>{t("theme.toggle")}</Label>
+          <Label>{t("theme.label")}</Label>
           <Select value={theme} onValueChange={setTheme as (v: string) => void}>
             <SelectTrigger>
               <SelectValue />
@@ -96,6 +109,14 @@ export function TerminalSection() {
     setSelectedThemeId,
     fontSize,
     setFontSize,
+    fontPresetId,
+    customFontFamily,
+    setFontPresetId,
+    setCustomFontFamily,
+    scrollback,
+    setScrollback,
+    webglEnabled,
+    setWebglEnabled,
     customThemes,
     addCustomTheme,
     updateCustomTheme,
@@ -104,6 +125,39 @@ export function TerminalSection() {
   const resolvedTheme = useResolvedTheme();
   const [themeEditorOpen, setThemeEditorOpen] = useState(false);
   const [editingTheme, setEditingTheme] = useState<TerminalTheme | undefined>(undefined);
+  const [installedFonts, setInstalledFonts] = useState<string[] | null | undefined>(undefined);
+
+  useEffect(() => {
+    let cancelled = false;
+    loadInstalledFonts().then((fonts) => {
+      if (!cancelled) setInstalledFonts(fonts);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const { recommendedFonts, otherFonts } = useMemo(() => buildTerminalFontGroups(installedFonts), [installedFonts]);
+  const fontOptions = useMemo(() => [...recommendedFonts, ...otherFonts], [recommendedFonts, otherFonts]);
+
+  const defaultResolvedName = useMemo(() => resolveDefaultFontPrimary(installedFonts ?? null), [installedFonts]);
+
+  // Orphan = the stored fontPresetId resolves to something we are NOT already
+  // rendering in the recommended/other groups (e.g. a legacy preset id, or a
+  // family that was installed when the user picked it but is gone now). We
+  // render it as a standalone item so the Select doesn't show a blank value
+  // and the user can see what was previously chosen.
+  const orphan = useMemo(
+    () => resolveFontPresetOrphan(fontPresetId, fontOptions, installedFonts),
+    [fontPresetId, fontOptions, installedFonts]
+  );
+
+  const fontSelectValue =
+    fontPresetId === CUSTOM_TERMINAL_FONT_PRESET_ID || fontPresetId === DEFAULT_TERMINAL_FONT_PRESET_ID
+      ? fontPresetId
+      : (fontOptions.find((opt) => opt.value === fontPresetId || opt.name === fontPresetId)?.value ??
+        orphan?.value ??
+        fontPresetId);
 
   return (
     <>
@@ -112,6 +166,80 @@ export function TerminalSection() {
           <CardTitle className="text-base">{t("terminal.title")}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
+          {/* Font family */}
+          <div className="grid gap-2">
+            <Label>{t("terminal.fontFamily")}</Label>
+            <Select value={fontSelectValue} onValueChange={setFontPresetId}>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="min-w-[18rem] max-h-[28rem]">
+                <SelectItem value={DEFAULT_TERMINAL_FONT_PRESET_ID}>
+                  <span className="min-w-0 flex-1 truncate">
+                    {t("terminal.defaultFont")}
+                    {defaultResolvedName && (
+                      <span
+                        className="text-muted-foreground ml-2"
+                        style={{ fontFamily: quoteFamilyName(defaultResolvedName) }}
+                      >
+                        ({defaultResolvedName})
+                      </span>
+                    )}
+                  </span>
+                </SelectItem>
+                <SelectSeparator />
+                <SelectItem value={CUSTOM_TERMINAL_FONT_PRESET_ID}>{t("terminal.customFont")}</SelectItem>
+                {orphan && (
+                  <>
+                    <SelectSeparator />
+                    <SelectItem key={`orphan-${orphan.value}`} value={orphan.value}>
+                      <span className="min-w-0 flex-1 truncate" style={{ fontFamily: quoteFamilyName(orphan.name) }}>
+                        {orphan.name}
+                      </span>
+                    </SelectItem>
+                  </>
+                )}
+                {recommendedFonts.length > 0 && (
+                  <>
+                    <SelectSeparator />
+                    <SelectGroup>
+                      <SelectLabel>{t("terminal.fontRecommended")}</SelectLabel>
+                      {recommendedFonts.map((font) => (
+                        <SelectItem key={`rec-${font.value}`} value={font.value}>
+                          <span className="min-w-0 flex-1 truncate" style={{ fontFamily: quoteFamilyName(font.name) }}>
+                            {font.name}
+                          </span>
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </>
+                )}
+                {otherFonts.length > 0 && (
+                  <>
+                    <SelectSeparator />
+                    <SelectGroup>
+                      <SelectLabel>{t("terminal.fontOther")}</SelectLabel>
+                      {otherFonts.map((font) => (
+                        <SelectItem key={`oth-${font.value}`} value={font.value}>
+                          <span className="min-w-0 flex-1 truncate" style={{ fontFamily: quoteFamilyName(font.name) }}>
+                            {font.name}
+                          </span>
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </>
+                )}
+              </SelectContent>
+            </Select>
+            {fontPresetId === CUSTOM_TERMINAL_FONT_PRESET_ID && (
+              <Input
+                value={customFontFamily}
+                onChange={(e) => setCustomFontFamily(e.target.value)}
+                placeholder={t("terminal.customFontPlaceholder")}
+              />
+            )}
+          </div>
+
           {/* Font size */}
           <div className="grid gap-2">
             <Label>{t("terminal.fontSize")}</Label>
@@ -126,6 +254,35 @@ export function TerminalSection() {
               />
               <span className="text-sm text-muted-foreground">px</span>
             </div>
+          </div>
+
+          {/* Scrollback */}
+          <div className="grid gap-2">
+            <Label>{t("terminal.scrollback")}</Label>
+            <div className="flex items-center gap-2">
+              <Input
+                type="number"
+                min={SCROLLBACK_MIN}
+                max={SCROLLBACK_MAX}
+                step={100}
+                value={scrollback}
+                onChange={(e) => setScrollback(Number(e.target.value))}
+                className="w-32"
+              />
+              <span className="text-sm text-muted-foreground">{t("terminal.scrollbackUnit")}</span>
+            </div>
+            <p className="text-xs text-muted-foreground">{t("terminal.scrollbackHint")}</p>
+          </div>
+
+          {/* GPU acceleration (WebGL renderer). Auto-flips to off when the
+              renderer fails to initialize or its WebGL context is lost — so
+              "On" actually reflects "currently working". User can re-enable. */}
+          <div className="flex items-start justify-between gap-4">
+            <div className="grid gap-1">
+              <Label>{t("terminal.gpuAcceleration")}</Label>
+              <p className="text-xs text-muted-foreground">{t("terminal.gpuAccelerationHint")}</p>
+            </div>
+            <Switch checked={webglEnabled} onCheckedChange={setWebglEnabled} />
           </div>
 
           <Separator />

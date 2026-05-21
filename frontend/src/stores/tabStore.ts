@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { useRecentAssetStore } from "./recentAssetStore";
 
 // === Tab Types ===
 
@@ -25,9 +26,12 @@ export interface QueryTabMeta {
   assetId: number;
   assetName: string;
   assetIcon: string;
-  assetType: "database" | "redis" | "mongodb";
+  assetType: "database" | "redis" | "mongodb" | "kafka" | "k8s";
   driver?: string;
   defaultDatabase?: string;
+  redisDatabase?: number;
+  redisScanPageSize?: number;
+  redisKeySeparator?: string;
 }
 
 export interface PageTabMeta {
@@ -63,6 +67,15 @@ const closeHooks: TabCloseHook[] = [];
 
 export function registerTabCloseHook(hook: TabCloseHook) {
   closeHooks.push(hook);
+}
+
+// === Replace Hook ===
+
+type TabReplaceHook = (oldId: string, newId: string) => void;
+const replaceHooks: TabReplaceHook[] = [];
+
+export function registerTabReplaceHook(hook: TabReplaceHook) {
+  replaceHooks.push(hook);
 }
 
 // === Restore Hook ===
@@ -133,6 +146,19 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
       tabs: [...s.tabs, tab],
       activeTabId: activate ? tab.id : s.activeTabId,
     }));
+    // Record recently opened asset (terminal/query/page carry assetId; info uses targetId for assets)
+    const { meta } = tab;
+    let assetId = 0;
+    if (meta.type === "terminal" || meta.type === "query") {
+      assetId = meta.assetId;
+    } else if (meta.type === "page" && meta.assetId != null) {
+      assetId = meta.assetId;
+    } else if (meta.type === "info" && meta.targetType === "asset") {
+      assetId = meta.targetId;
+    }
+    if (assetId > 0) {
+      useRecentAssetStore.getState().touch(assetId);
+    }
   },
 
   closeTab: (id) => {
@@ -176,6 +202,7 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
       tabs: s.tabs.map((t) => (t.id === oldId ? { ...t, id: newId } : t)),
       activeTabId: s.activeTabId === oldId ? newId : s.activeTabId,
     }));
+    for (const hook of replaceHooks) hook(oldId, newId);
   },
 
   reorderTab: (fromId, toId) => {
@@ -353,7 +380,7 @@ function _migrateOldKeys(): SavedTabStore | null {
             assetId: number;
             assetName: string;
             assetIcon: string;
-            assetType: "database" | "redis" | "mongodb";
+            assetType: "database" | "redis" | "mongodb" | "kafka" | "k8s";
             driver?: string;
             defaultDatabase?: string;
           }) => {

@@ -36,7 +36,7 @@
   --panel-divider: oklch(0 0 0 / 8%);
   --success: oklch(0.55 0.19 155);
   --warning: oklch(0.70 0.17 85);
-  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-sans: system-ui, -apple-system, sans-serif;
   --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, monospace;
 }
 
@@ -115,11 +115,25 @@
   * {
     @apply border-border outline-ring/50;
   }
+  button,
+  [role="button"] {
+    @apply outline-none;
+  }
+  button:focus-visible,
+  [role="button"]:focus-visible {
+    @apply ring-1 ring-ring/45;
+  }
   html, body {
     @apply h-full overflow-hidden;
+    user-select: none;
+    -webkit-user-select: none;
   }
   body {
     @apply bg-background text-foreground font-sans antialiased;
+  }
+  input, textarea, [contenteditable="true"], .select-text {
+    user-select: text;
+    -webkit-user-select: text;
   }
   html {
     transition: background-color 200ms ease, color 200ms ease;
@@ -171,16 +185,37 @@
 }
 
 @layer components {
-  .tree-group-content {
-    display: grid;
-    grid-template-rows: 1fr;
-    transition: grid-template-rows 200ms ease;
+  .query-table-frozen-header-selected {
+    background-color: var(--muted);
+    background-image: linear-gradient(
+      color-mix(in oklab, var(--primary) 25%, transparent),
+      color-mix(in oklab, var(--primary) 25%, transparent)
+    );
   }
-  .tree-group-content[data-collapsed="true"] {
-    grid-template-rows: 0fr;
+
+  .query-table-frozen-cell-selected {
+    background-color: var(--background);
+    background-image: linear-gradient(
+      color-mix(in oklab, var(--primary) 15%, transparent),
+      color-mix(in oklab, var(--primary) 15%, transparent)
+    );
   }
-  .tree-group-content > div {
-    overflow: hidden;
+
+  .query-table-frozen-cell-focus {
+    background-color: var(--background);
+    background-image: linear-gradient(
+      color-mix(in oklab, var(--primary) 5%, transparent),
+      color-mix(in oklab, var(--primary) 5%, transparent)
+    );
+  }
+
+  .query-table-frozen-cell-edited {
+    background-color: var(--background);
+    background-image: linear-gradient(oklch(0.94 0.08 95 / 75%), oklch(0.94 0.08 95 / 75%));
+  }
+
+  .dark .query-table-frozen-cell-edited {
+    background-image: linear-gradient(oklch(0.55 0.09 85 / 35%), oklch(0.55 0.09 85 / 35%));
   }
 
 }

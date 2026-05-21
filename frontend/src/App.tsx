@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef, useEffect, lazy, Suspense } from "react";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import { ThemeProvider } from "@/components/theme-provider";
@@ -8,21 +8,26 @@ import { AssetTree } from "@/components/layout/AssetTree";
 import { MainPanel } from "@/components/layout/MainPanel";
 import { SideAssistantPanel } from "@/components/ai/SideAssistantPanel";
 import { WindowControls } from "@/components/layout/WindowControls";
+import { TopBar } from "@/components/layout/TopBar";
+import { CommandPaletteDialog } from "@/components/command/CommandPaletteDialog";
 import { EdgeRevealStrip } from "@/components/layout/EdgeRevealStrip";
 import { useLayoutStore } from "@/stores/layoutStore";
 import { LeftPanel } from "@/components/layout/LeftPanel";
 import { SideTabList } from "@/components/layout/SideTabList";
-import { AssetForm } from "@/components/asset/AssetForm";
-import { GroupDialog } from "@/components/asset/GroupDialog";
 import { PermissionDialog } from "@/components/ai/PermissionDialog";
 import { OpsctlApprovalDialog } from "@/components/approval/OpsctlApprovalDialog";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 
+// 资产表单/分组对话框：用户点"添加/编辑"才会打开，从首屏 bundle 拆出。
+const AssetForm = lazy(() => import("@/components/asset/AssetForm").then((m) => ({ default: m.AssetForm })));
+const GroupDialog = lazy(() => import("@/components/asset/GroupDialog").then((m) => ({ default: m.GroupDialog })));
+
 import { useAssetStore } from "@/stores/assetStore";
 import { useTerminalStore } from "@/stores/terminalStore";
 import { useQueryStore } from "@/stores/queryStore";
+import { useSFTPStore } from "@/stores/sftpStore";
 import { getAssetType } from "@/lib/assetTypes";
-import { useTabStore, type InfoTabMeta } from "@/stores/tabStore";
+import { useTabStore } from "@/stores/tabStore";
 import { useExtensionStore } from "@/extension";
 import { bootstrapExtensions } from "@/extension/init";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
@@ -118,6 +123,7 @@ function App() {
     () => localStorage.getItem("sidebar_collapsed") === "true"
   );
   const [aiPanelCollapsed, setAiPanelCollapsed] = useState(() => localStorage.getItem("ai_panel_collapsed") === "true");
+  const [commandOpen, setCommandOpen] = useState(false);
   const [assetTreeWidth, setAssetTreeWidth] = useState(() => {
     const saved = localStorage.getItem("asset_tree_width");
     return saved ? Math.max(160, Math.min(480, Number(saved))) : 224;
@@ -169,9 +175,14 @@ function App() {
     document.addEventListener("mouseup", onMouseUp);
   }, []);
 
+  const toggleCommandPalette = useCallback(() => {
+    setCommandOpen((prev) => !prev);
+  }, []);
+
   useKeyboardShortcuts({
     onToggleAIPanel: toggleAIPanel,
     onToggleSidebar: toggleSidebar,
+    onToggleCommandPalette: toggleCommandPalette,
   });
 
   // 资产表单
@@ -214,32 +225,6 @@ function App() {
 
   const handleSelectAsset = (asset: asset_entity.Asset) => {
     selectAsset(asset.ID);
-    const tabStore = useTabStore.getState();
-    const previewTabId = "info-preview";
-    const existing = tabStore.tabs.find((t) => t.id === previewTabId);
-    const meta: InfoTabMeta = {
-      type: "info",
-      targetType: "asset",
-      targetId: asset.ID,
-      name: asset.Name,
-      icon: asset.Icon || undefined,
-    };
-    if (existing) {
-      tabStore.updateTab(previewTabId, {
-        label: asset.Name,
-        icon: asset.Icon || undefined,
-        meta,
-      });
-      tabStore.activateTab(previewTabId);
-    } else {
-      tabStore.openTab({
-        id: previewTabId,
-        type: "info",
-        label: asset.Name,
-        icon: asset.Icon || undefined,
-        meta,
-      });
-    }
   };
 
   const handleOpenInfoTab = useCallback((type: "asset" | "group", id: number, name: string, icon?: string) => {
@@ -264,6 +249,23 @@ function App() {
   };
 
   const handleConnectAsset = async (asset: asset_entity.Asset) => {
+    if (asset.Type === "k8s") {
+      const pageId = `k8s-${asset.ID}`;
+      const tabStore = useTabStore.getState();
+      const existing = tabStore.tabs.find((t) => t.id === pageId);
+      if (existing) {
+        tabStore.activateTab(pageId);
+      } else {
+        tabStore.openTab({
+          id: pageId,
+          type: "page",
+          label: asset.Name,
+          icon: asset.Icon || "kubernetes",
+          meta: { type: "page", pageId: "k8s-cluster", assetId: asset.ID },
+        });
+      }
+      return;
+    }
     const def = getAssetType(asset.Type);
     if (def?.connectAction === "query") {
       useQueryStore.getState().openQueryTab(asset);
@@ -308,16 +310,29 @@ function App() {
     }
   };
 
+  const handleOpenFileManager = async (asset: asset_entity.Asset) => {
+    if (asset.Type !== "ssh") return;
+    try {
+      const tabId = await connect(asset);
+      if (!tabId) return;
+      const sftp = useSFTPStore.getState();
+      if (!sftp.fileManagerOpenTabs[tabId]) {
+        sftp.toggleFileManager(tabId);
+      }
+    } catch (e) {
+      toast.error(`${asset.Name}: ${String(e)}`);
+    }
+  };
+
   // Sidebar page navigation
   const handlePageChange = useCallback((page: string) => {
     const tabStore = useTabStore.getState();
     if (page === "home") {
-      // Activate first non-page tab, or deactivate
-      const homeTab = tabStore.tabs.find((t) => t.type === "terminal" || t.type === "info");
+      const homeTab = tabStore.tabs.find((t) => t.type === "terminal" || t.type === "info" || t.type === "query");
       tabStore.activateTab(homeTab?.id || tabStore.tabs[0]?.id || "");
       return;
     }
-    // Page tabs: settings, forward, sshkeys, audit
+    // Page tabs: settings, forward, sshkeys, audit, snippets
     const existing = tabStore.tabs.find((t) => t.id === page);
     if (existing) {
       tabStore.activateTab(page);
@@ -337,138 +352,162 @@ function App() {
 
   // Derive active page for sidebar highlighting
   const activeTab = useTabStore((s) => s.tabs.find((t) => t.id === s.activeTabId));
-  const activePage = !activeTab
-    ? "home"
-    : activeTab.type === "page"
-      ? activeTab.id
-      : activeTab.type === "terminal" || activeTab.type === "info"
-        ? "home"
-        : "other";
+  const activePage = activeTab?.type === "page" ? activeTab.id : "home";
+
+  // 顶部「隐藏资产列表」按钮：根据 tab 布局适配不同的可见状态
+  const assetTreeIsCollapsed = tabBarLayout === "left" ? !leftPanelVisible : assetTreeCollapsed;
+  const handleToggleAssetTree = useCallback(() => {
+    if (tabBarLayout === "left") {
+      useLayoutStore.getState().toggleVisible();
+    } else {
+      toggleSidebar();
+    }
+  }, [tabBarLayout, toggleSidebar]);
 
   return (
     <ThemeProvider defaultTheme="system">
       <ErrorBoundary>
         <TooltipProvider>
-          <div className="flex h-screen w-screen overflow-hidden bg-background">
+          <div className="flex h-screen w-screen flex-col overflow-hidden bg-background">
+            {!sidebarHidden && (
+              <TopBar
+                commandOpen={commandOpen}
+                onCommandOpenChange={setCommandOpen}
+                onConnectAsset={handleConnectAsset}
+                assetTreeCollapsed={assetTreeIsCollapsed}
+                onToggleAssetTree={handleToggleAssetTree}
+                aiPanelCollapsed={aiPanelCollapsed}
+                onToggleAIPanel={toggleAIPanel}
+              />
+            )}
+            {sidebarHidden && (
+              <CommandPaletteDialog
+                open={commandOpen}
+                onOpenChange={setCommandOpen}
+                onConnectAsset={handleConnectAsset}
+              />
+            )}
             <WindowControls />
-            {tabBarLayout === "left" ? (
-              <>
-                {sidebarHidden && <EdgeRevealStrip onClick={toggleSidebarHidden} />}
-                {!sidebarHidden && (
-                  <Sidebar
-                    activePage={activePage}
-                    onPageChange={handlePageChange}
-                    sidebarCollapsed={false}
-                    onToggleSidebar={() => useLayoutStore.getState().toggleVisible()}
-                    onHideSidebar={toggleSidebarHidden}
-                    aiPanelCollapsed={aiPanelCollapsed}
-                    onToggleAIPanel={toggleAIPanel}
-                  />
-                )}
-                {leftPanelVisible && (
-                  <LeftPanel>
-                    {activeSidePanel === "assets" ? (
-                      <AssetTree
-                        collapsed={false}
-                        sidebarHidden={sidebarHidden}
-                        onShowSidebar={toggleSidebarHidden}
-                        onAddAsset={handleAddAsset}
-                        onAddGroup={() => {
-                          setEditingGroup(null);
-                          setGroupDialogOpen(true);
-                        }}
-                        onEditGroup={(group) => {
-                          setEditingGroup(group);
-                          setGroupDialogOpen(true);
-                        }}
-                        onGroupDetail={(group) => {
-                          selectGroup(group.ID);
-                          selectAsset(null);
-                          handleOpenInfoTab("group", group.ID, group.Name, group.Icon || undefined);
-                        }}
-                        onEditAsset={handleEditAsset}
-                        onCopyAsset={handleCopyAsset}
-                        onConnectAsset={handleConnectAsset}
-                        onConnectAssetInNewTab={handleConnectAssetInNewTab}
-                        onSelectAsset={handleSelectAsset}
-                        onOpenInfoTab={handleOpenInfoTab}
-                      />
-                    ) : (
-                      <SideTabList />
-                    )}
-                  </LeftPanel>
-                )}
-              </>
-            ) : (
-              <>
-                {sidebarHidden && <EdgeRevealStrip onClick={toggleSidebarHidden} />}
-                {!sidebarHidden && (
-                  <Sidebar
-                    activePage={activePage}
-                    onPageChange={handlePageChange}
-                    sidebarCollapsed={assetTreeCollapsed}
-                    onToggleSidebar={toggleSidebar}
-                    onHideSidebar={toggleSidebarHidden}
-                    aiPanelCollapsed={aiPanelCollapsed}
-                    onToggleAIPanel={toggleAIPanel}
-                  />
-                )}
-                <div
-                  className="relative overflow-hidden shrink-0 transition-[width] duration-200"
-                  style={{ width: assetTreeCollapsed ? 0 : assetTreeWidth }}
-                >
-                  <AssetTree
-                    collapsed={false}
-                    sidebarHidden={sidebarHidden}
-                    onShowSidebar={toggleSidebarHidden}
-                    onAddAsset={handleAddAsset}
-                    onAddGroup={() => {
-                      setEditingGroup(null);
-                      setGroupDialogOpen(true);
-                    }}
-                    onEditGroup={(group) => {
-                      setEditingGroup(group);
-                      setGroupDialogOpen(true);
-                    }}
-                    onGroupDetail={(group) => {
-                      selectGroup(group.ID);
-                      selectAsset(null);
-                      handleOpenInfoTab("group", group.ID, group.Name, group.Icon || undefined);
-                    }}
-                    onEditAsset={handleEditAsset}
-                    onCopyAsset={handleCopyAsset}
-                    onConnectAsset={handleConnectAsset}
-                    onConnectAssetInNewTab={handleConnectAssetInNewTab}
-                    onSelectAsset={handleSelectAsset}
-                    onOpenInfoTab={handleOpenInfoTab}
-                  />
-                  {/* Resize handle */}
-                  {!assetTreeCollapsed && (
-                    <div
-                      className="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize z-10 hover:bg-primary/20 active:bg-primary/30 transition-colors"
-                      onMouseDown={handleAssetTreeResizeStart}
+            <div className="flex flex-1 min-h-0 overflow-hidden">
+              {tabBarLayout === "left" ? (
+                <>
+                  {sidebarHidden && <EdgeRevealStrip onClick={toggleSidebarHidden} />}
+                  {!sidebarHidden && (
+                    <Sidebar
+                      activePage={activePage}
+                      onPageChange={handlePageChange}
+                      onHideSidebar={toggleSidebarHidden}
                     />
                   )}
-                </div>
-                {assetTreeResizing && <div className="fixed inset-0 z-50 cursor-col-resize" />}
-              </>
-            )}
-            <MainPanel
-              onEditAsset={handleEditAsset}
-              onDeleteAsset={handleDeleteAsset}
-              onConnectAsset={handleConnectAsset}
-            />
-            <SideAssistantPanel collapsed={aiPanelCollapsed} onToggle={toggleAIPanel} />
-            {aiPanelCollapsed && <EdgeRevealStrip side="right" onClick={toggleAIPanel} />}
+                  {leftPanelVisible && (
+                    <LeftPanel>
+                      {activeSidePanel === "assets" ? (
+                        <AssetTree
+                          collapsed={false}
+                          sidebarHidden={sidebarHidden}
+                          onShowSidebar={toggleSidebarHidden}
+                          onAddAsset={handleAddAsset}
+                          onAddGroup={() => {
+                            setEditingGroup(null);
+                            setGroupDialogOpen(true);
+                          }}
+                          onEditGroup={(group) => {
+                            setEditingGroup(group);
+                            setGroupDialogOpen(true);
+                          }}
+                          onGroupDetail={(group) => {
+                            selectGroup(group.ID);
+                            selectAsset(null);
+                            handleOpenInfoTab("group", group.ID, group.Name, group.Icon || undefined);
+                          }}
+                          onEditAsset={handleEditAsset}
+                          onCopyAsset={handleCopyAsset}
+                          onConnectAsset={handleConnectAsset}
+                          onConnectAssetInNewTab={handleConnectAssetInNewTab}
+                          onOpenFileManager={handleOpenFileManager}
+                          onSelectAsset={handleSelectAsset}
+                          onOpenInfoTab={handleOpenInfoTab}
+                        />
+                      ) : (
+                        <SideTabList />
+                      )}
+                    </LeftPanel>
+                  )}
+                </>
+              ) : (
+                <>
+                  {sidebarHidden && <EdgeRevealStrip onClick={toggleSidebarHidden} />}
+                  {!sidebarHidden && (
+                    <Sidebar
+                      activePage={activePage}
+                      onPageChange={handlePageChange}
+                      onHideSidebar={toggleSidebarHidden}
+                    />
+                  )}
+                  <div
+                    className="relative overflow-hidden shrink-0 transition-[width] duration-200"
+                    style={{ width: assetTreeCollapsed ? 0 : assetTreeWidth }}
+                  >
+                    <AssetTree
+                      collapsed={false}
+                      sidebarHidden={sidebarHidden}
+                      onShowSidebar={toggleSidebarHidden}
+                      onAddAsset={handleAddAsset}
+                      onAddGroup={() => {
+                        setEditingGroup(null);
+                        setGroupDialogOpen(true);
+                      }}
+                      onEditGroup={(group) => {
+                        setEditingGroup(group);
+                        setGroupDialogOpen(true);
+                      }}
+                      onGroupDetail={(group) => {
+                        selectGroup(group.ID);
+                        selectAsset(null);
+                        handleOpenInfoTab("group", group.ID, group.Name, group.Icon || undefined);
+                      }}
+                      onEditAsset={handleEditAsset}
+                      onCopyAsset={handleCopyAsset}
+                      onConnectAsset={handleConnectAsset}
+                      onConnectAssetInNewTab={handleConnectAssetInNewTab}
+                      onOpenFileManager={handleOpenFileManager}
+                      onSelectAsset={handleSelectAsset}
+                      onOpenInfoTab={handleOpenInfoTab}
+                    />
+                    {/* Resize handle */}
+                    {!assetTreeCollapsed && (
+                      <div
+                        className="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize z-10 hover:bg-primary/20 active:bg-primary/30 transition-colors"
+                        onMouseDown={handleAssetTreeResizeStart}
+                      />
+                    )}
+                  </div>
+                  {assetTreeResizing && <div className="fixed inset-0 z-50 cursor-col-resize" />}
+                </>
+              )}
+              <MainPanel
+                onEditAsset={handleEditAsset}
+                onDeleteAsset={handleDeleteAsset}
+                onConnectAsset={handleConnectAsset}
+              />
+              <SideAssistantPanel collapsed={aiPanelCollapsed} onToggle={toggleAIPanel} />
+              {aiPanelCollapsed && <EdgeRevealStrip side="right" onClick={toggleAIPanel} />}
+            </div>
           </div>
 
-          <AssetForm
-            open={assetFormOpen}
-            onOpenChange={setAssetFormOpen}
-            editAsset={editingAsset}
-            defaultGroupId={defaultGroupId}
-          />
-          <GroupDialog open={groupDialogOpen} onOpenChange={setGroupDialogOpen} editGroup={editingGroup} />
+          <Suspense fallback={null}>
+            {assetFormOpen && (
+              <AssetForm
+                open={assetFormOpen}
+                onOpenChange={setAssetFormOpen}
+                editAsset={editingAsset}
+                defaultGroupId={defaultGroupId}
+              />
+            )}
+            {groupDialogOpen && (
+              <GroupDialog open={groupDialogOpen} onOpenChange={setGroupDialogOpen} editGroup={editingGroup} />
+            )}
+          </Suspense>
           <PermissionDialog />
           <OpsctlApprovalDialog />
           <Toaster richColors />

@@ -1,3 +1,155 @@
+<a name="1.6.2"></a>
+
+## 1.6.2 (2026-05-18)
+
+修复 xterm WebGL 终端选区高频更新时选中文字出现字体"变样"的渲染问题。
+
+### 🎨 UI 改进
+
+- 🎨 终端选区显式设置前景色，消除选区高频更新时选中文字字体变样 (by @CodFrm)
+
+<a name="1.6.1"></a>
+
+## 1.6.1 (2026-05-18)
+
+修复 SSH 终端在按空格/大写字母时被 rollover 旁路误判而双发字符的回归；端口转发启停过程加上 loading 反馈，避免拨号期间用户误以为无响应反复点击导致连接被拆。
+
+### 🐛 Bug 修复
+
+- 🐛 修复 SSH 终端按空格被双发（rollover 旁路对走 keypress 路径的字符误判补发） (by @CodFrm)
+
+### 🎨 UI 改进
+
+- 🎨 端口转发启停增加 loading 反馈（按钮 spinner + 状态区"处理中…"，拨号中禁用资产下拉以防止隐式 restart） (by @CodFrm)
+
+<a name="1.6.0"></a>
+
+## 1.6.0 (2026-05-17)
+
+本次版本新增串口（COM/TTY）资产与 AI 串口命令执行，为 AI 助手加入资产上下文选择能力，将 AI 子系统迁移到 cago-frame/agents 框架；新增 VSCode 风搜索/命令面板、资产树拖拽重排、SSH 资产右键文件管理、SSH 60s 保活心跳、Anthropic/OpenAI provider 思考模式等多项功能，并在数据库查询面板与 AI 流式输出做了显著性能优化；修复 SSH 私钥 + MFA 接续认证、更新后重启未自动启动、终端 IME 丢字、SSH Powerline/Nerd Font 渲染等多项问题。
+
+### 🚀 主要新功能
+
+- 💥 支持串口（COM/TTY）资产、终端连接与 AI 串口命令 ([#89](https://github.com/opskat/opskat/pull/89)) (by @fqscfqj)
+- 💥 支持 AI 助手选择资产上下文 ([#121](https://github.com/opskat/opskat/pull/121)) (by @CodFrm)
+- ✨ 顶部增加 VSCode 风搜索/命令面板与资产、AI 面板折叠按钮 ([#113](https://github.com/opskat/opskat/pull/113)) (by @CodFrm)
+- ✨ SSH 资产右键支持一键打开文件管理 ([#104](https://github.com/opskat/opskat/pull/104)) (by @lonelyman0108)
+- ✨ 资产树支持拖拽重排 + 修复嵌套分组添加资产回填错分组 ([#101](https://github.com/opskat/opskat/pull/101)) (by @lonelyman0108)
+- ✨ 密钥关联用户名 + 资产表单根据所选密钥自动填 username ([#88](https://github.com/opskat/opskat/pull/88)) (by @CodFrm)
+- ✨ SSH 60s 保活心跳 + 断开后回车重连 ([#81](https://github.com/opskat/opskat/pull/81)) (by @CodFrm)
+- ✨ 新增公共 SSH 客户端包 ([#82](https://github.com/opskat/opskat/pull/82)) (by @CodFrm)
+- ✨ 为 Anthropic provider 添加思考模式（reasoning effort）支持 ([#76](https://github.com/opskat/opskat/pull/76)) (by @CodFrm)
+- ✨ 为 OpenAI 兼容 provider 添加思考模式（reasoning effort）支持 ([#74](https://github.com/opskat/opskat/pull/74)) (by @fqscfqj)
+- ✨ 保存窗口尺寸配置 (by @CodFrm)
+
+### ⚡️ 性能优化
+
+- ⚡️ 数据库查询面板连接复用 + OpenTable 首屏合并 + 大表虚拟化 ([#116](https://github.com/opskat/opskat/pull/116)) (by @CodFrm)
+- ⚡️ AI 流式输出性能优化 + 组件拆分重构 ([#93](https://github.com/opskat/opskat/pull/93)) (by @CodFrm)
+
+### ♻️ 重构
+
+- ♻️ 将 AI 子系统迁移到 cago-frame/agents 框架 ([#92](https://github.com/opskat/opskat/pull/92)) (by @CodFrm)
+- ♻️ 代码瘦身与前端体验优化 ([#119](https://github.com/opskat/opskat/pull/119)) (by @CodFrm)
+- ♻️ AI 本地工具改名 local_* 与远程工具视觉隔离 ([#110](https://github.com/opskat/opskat/pull/110)) (by @CodFrm)
+
+### 🔒 安全性
+
+- 🔒 加固组合命令权限校验 ([#107](https://github.com/opskat/opskat/pull/107)) (by @CodFrm)
+
+### 🐛 Bug 修复
+
+- 🐛 修复 SSH 私钥认证后无法继续 keyboard-interactive(MFA/OTP) ([#109](https://github.com/opskat/opskat/pull/109)) (by @CodFrm)
+- 🐛 修复更新后立即重启未自动启动 ([#106](https://github.com/opskat/opskat/pull/106)) (by @CodFrm)
+- 🐛 修复 SSH 终端 Powerline/Nerd Font 图标渲染为方框 + 字体下拉改读系统字体推荐/其他两区 + 主题切换回显当前选中 ([#103](https://github.com/opskat/opskat/pull/103)) (by @lonelyman0108)
+- 🐛 设置子标签持久化 + 资产测试连接可取消 + 重构资产表单布局 ([#102](https://github.com/opskat/opskat/pull/102)) (by @lonelyman0108)
+- 🐛 修复 SFTP 传输进度 tab 作用域 ([#95](https://github.com/opskat/opskat/pull/95)) (by @CodFrm)
+- 🐛 Terminal IME：旁路 xterm key-rollover input 丢字 bug ([#105](https://github.com/opskat/opskat/pull/105)) (by @CodFrm)
+- 🐛 Terminal IME：抽 TerminalInputBridge + isComposing 早返回 [#94](https://github.com/opskat/opskat/issues/94) ([#98](https://github.com/opskat/opskat/pull/98)) (by @CodFrm)
+- 🐛 修复 AI 助手输入框快捷换行 ([#111](https://github.com/opskat/opskat/pull/111)) (by @CodFrm)
+- 🐛 修复未分组资产树展开 ([#73](https://github.com/opskat/opskat/pull/73)) (by @CodFrm)
+- 🐛 修复 AI mention 弹出兜底 ([#72](https://github.com/opskat/opskat/pull/72)) (by @CodFrm)
+
+### 📄 文档
+
+- 📄 为 README 添加介绍视频链接 ([#87](https://github.com/opskat/opskat/pull/87)) (by @Pililink)
+
+<a name="1.5.0"></a>
+
+## 1.5.0 (2026-05-06)
+
+本次版本带来 K8S 资产与集群资源管理、Kafka 管理两大全新模块，Redis 管理面板大幅完善，新增 VSCode 风格的 Cmd+P 快速打开、终端字体预设、终端与在线目录的 cwd 双向同步；MySQL 完善了表格编辑、导入导出与筛选流程，并对资产路径做了重构以优化前端打包体积；同时修复了 AI 误传 group_id=0/parent_id=0 导致资产或分组被意外解绑、SSH 登录提示被遮挡、设置页配置 AI 提供商后助手仍要求重新配置等多项问题。
+
+### 🚀 主要新功能
+
+- 💥 支持 K8S 资产与集群资源管理 ([#58](https://github.com/opskat/opskat/pull/58)) (by @shanaiardor)
+- 💥 支持 Kafka 管理 ([#68](https://github.com/opskat/opskat/pull/68)) (by @Pililink)
+- ✨ 完善 Redis 管理体验与运维面板 ([#53](https://github.com/opskat/opskat/pull/53)) (by @Pililink)
+- ✨ 完善 MySQL 表格编辑、导入导出与筛选流程 ([#59](https://github.com/opskat/opskat/pull/59)) (by @youaremywind)
+- ✨ Cmd+P 快速打开（VSCode 风格） ([#55](https://github.com/opskat/opskat/pull/55)) (by @CodFrm)
+- ✨ 支持终端字体预设 ([#66](https://github.com/opskat/opskat/pull/66)) (by @CodFrm)
+- ✨ 终端与在线目录支持 cwd 双向同步 ([#63](https://github.com/opskat/opskat/pull/63)) (by @2849236173)
+- ✨ database 表右键菜单支持删除表/清空表，二次确认避免误操作 (by @CodFrm)
+
+### 🐛 Bug 修复
+
+- 🐛 修复 SSH 登录提示被隐藏 ([#67](https://github.com/opskat/opskat/pull/67)) (by @CodFrm)
+- 🐛 修复 AI 误传 group_id=0/parent_id=0 导致资产或分组被意外解绑 (by @CodFrm)
+- 🐛 修复首次在设置中配置 AI 提供商后助手仍要求重新配置 [#61](https://github.com/opskat/opskat/issues/61) (by @CodFrm)
+- 🐛 修复侧边助手发送后输入框未清空 [#60](https://github.com/opskat/opskat/issues/60) (by @CodFrm)
+- 🐛 修复数据库树刷新功能 (by @CodFrm)
+- 🐛 修复 SSH 资产测试连接未传递托管密码凭据 [#57](https://github.com/opskat/opskat/issues/57) (by @CodFrm)
+
+### ♻️ 重构
+
+- ♻️ 重构资产路径并优化前端打包体积 ([#64](https://github.com/opskat/opskat/pull/64)) (by @CodFrm)
+
+<a name="1.4.1"></a>
+
+## 1.4.1 (2026-04-28)
+
+本次版本对资产树和 SSH 终端做了体验优化，并修复非中英文系统下 i18n 兜底语言的问题。
+
+### ✨ 新功能
+
+- ✨ 资产树支持隐藏空文件夹 (by @CodFrm)
+- ✨ SSH 终端回滚缓冲区可配置，默认调整为 25000 行 (by @CodFrm)
+
+### 🐛 Bug 修复
+
+- 🐛 修复非中英文系统下 i18n 兜底为中文的问题 (by @CodFrm)
+
+<a name="1.4.0"></a>
+
+## 1.4.0 (2026-04-27)
+
+本次版本带来代码片段（Snippets）复用系统与 WebDAV 备份提供方，AI 助手扩展为多会话标签栏并支持会话重命名、历史消息编辑重发与工具卡片展开；首页分区与设置页完成整合，资产树新增类型筛选，Redis 面板补齐 Stream 类型展示；同时修复了终端分屏内容丢失、Ctrl+A 全选、DeepSeek thinking 模式 400 等多项问题。
+
+### 🚀 主要新功能
+
+- 💥 代码片段（Snippets）复用系统 (by @CodFrm)
+- 💥 新增 WebDAV 备份提供方 ([#47](https://github.com/opskat/opskat/pull/47)) (by @Pililink)
+- 💥 侧边 AI 助手多会话标签与右侧会话栏 ([#35](https://github.com/opskat/opskat/pull/35)) (by @2849236173)
+- ✨ 新增 AI 会话重命名功能 ([#38](https://github.com/opskat/opskat/pull/38)) (by @2849236173)
+- ✨ 支持 AI 对话编辑历史消息后重发 ([#30](https://github.com/opskat/opskat/pull/30)) (by @2849236173)
+- ✨ AI 工具卡片可展开查看调用参数 (by @CodFrm)
+- ✨ AI 资产工具补齐密码/私钥/分组管理并触发左侧树刷新 (by @CodFrm)
+- ✨ 实现 Redis Stream 类型数据展示 ([#36](https://github.com/opskat/opskat/pull/36)) (by @shanaiardor)
+- ✨ 资产树类型筛选 + 移除 Sidebar 分区按钮 ([#51](https://github.com/opskat/opskat/pull/51)) (by @CodFrm)
+- ✨ 首页分区与设置页整合，修复列表交互状态 ([#37](https://github.com/opskat/opskat/pull/37)) (by @tangqiu0205)
+- ✨ 设置页新增 Bug 反馈、Debug 日志开关与打开日志目录 (by @CodFrm)
+- ✨ 设置页显示仓库地址 ([#45](https://github.com/opskat/opskat/pull/45)) (by @Pililink)
+- ✨ 扩展框架支持通用 TCP IO、deadline、action 取消与 textarea 格式化 ([#31](https://github.com/opskat/opskat/pull/31)) (by @CodFrm)
+
+### 🐛 Bug 修复
+
+- 🐛 修复 SSH 分屏后已存在终端内容被清空 (by @CodFrm)
+- 🐛 修复 Ctrl+A 全选导致整页文本被选中 [#48](https://github.com/opskat/opskat/issues/48) (by @CodFrm)
+- 🐛 修复终端 Ctrl+F 硬编码导致用户改绑无效 ([#32](https://github.com/opskat/opskat/pull/32)) (by @CodFrm)
+- 🐛 修复 DeepSeek thinking 模式下多轮对话报 400 错误的问题 ([#42](https://github.com/opskat/opskat/pull/42)) (by @shanaiardor)
+- 🐛 修复 Windows 环境下 OpenDirectory 因隐藏界面而无法正常显示 explorer 的问题 ([#41](https://github.com/opskat/opskat/pull/41)) (by @shanaiardor)
+- 🐛 修复 GitHub Releases 手动安装链接 ([#50](https://github.com/opskat/opskat/pull/50)) (by @Pililink)
+
 <a name="1.3.0"></a>
 
 ## 1.3.0 (2026-04-23)

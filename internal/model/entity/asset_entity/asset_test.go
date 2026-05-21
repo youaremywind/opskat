@@ -135,6 +135,104 @@ func TestAsset_CanConnect(t *testing.T) {
 	})
 }
 
+func TestAsset_SerialConfig(t *testing.T) {
+	convey.Convey("串口配置序列化与反序列化", t, func() {
+		a := &Asset{Name: "serial", Type: AssetTypeSerial}
+		cfg := &SerialConfig{
+			PortPath:    "COM3",
+			BaudRate:    115200,
+			DataBits:    8,
+			StopBits:    "1",
+			Parity:      "none",
+			FlowControl: "hardware",
+		}
+
+		err := a.SetSerialConfig(cfg)
+		assert.NoError(t, err)
+
+		got, err := a.GetSerialConfig()
+		assert.NoError(t, err)
+		assert.Equal(t, cfg.PortPath, got.PortPath)
+		assert.Equal(t, cfg.BaudRate, got.BaudRate)
+		assert.Equal(t, cfg.DataBits, got.DataBits)
+		assert.Equal(t, cfg.StopBits, got.StopBits)
+		assert.Equal(t, cfg.Parity, got.Parity)
+		assert.Equal(t, cfg.FlowControl, got.FlowControl)
+		assert.True(t, a.IsSerial())
+	})
+}
+
+func TestValidateSerial(t *testing.T) {
+	convey.Convey("串口资产校验", t, func() {
+		newAsset := func(mutate func(*SerialConfig)) *Asset {
+			cfg := &SerialConfig{
+				PortPath:    "COM3",
+				BaudRate:    115200,
+				DataBits:    8,
+				StopBits:    "1",
+				Parity:      "none",
+				FlowControl: "none",
+			}
+			if mutate != nil {
+				mutate(cfg)
+			}
+			a := &Asset{Name: "serial", Type: AssetTypeSerial}
+			assert.NoError(t, a.SetSerialConfig(cfg))
+			return a
+		}
+
+		convey.Convey("配置完整时校验通过", func() {
+			assert.NoError(t, newAsset(nil).Validate())
+		})
+
+		convey.Convey("端口路径为空时返回错误", func() {
+			assert.Error(t, newAsset(func(cfg *SerialConfig) { cfg.PortPath = "" }).Validate())
+		})
+
+		convey.Convey("波特率无效时返回错误", func() {
+			assert.Error(t, newAsset(func(cfg *SerialConfig) { cfg.BaudRate = 0 }).Validate())
+		})
+
+		convey.Convey("数据位无效时返回错误", func() {
+			assert.Error(t, newAsset(func(cfg *SerialConfig) { cfg.DataBits = 9 }).Validate())
+		})
+
+		convey.Convey("停止位无效时返回错误", func() {
+			assert.Error(t, newAsset(func(cfg *SerialConfig) { cfg.StopBits = "3" }).Validate())
+		})
+
+		convey.Convey("校验位无效时返回错误", func() {
+			assert.Error(t, newAsset(func(cfg *SerialConfig) { cfg.Parity = "invalid" }).Validate())
+		})
+
+		convey.Convey("流控模式无效时返回错误", func() {
+			assert.Error(t, newAsset(func(cfg *SerialConfig) { cfg.FlowControl = "software" }).Validate())
+		})
+	})
+}
+
+func TestAsset_CanConnectSerial(t *testing.T) {
+	convey.Convey("串口资产连接能力判断", t, func() {
+		convey.Convey("活跃且端口路径存在时可连接", func() {
+			a := &Asset{Name: "serial", Type: AssetTypeSerial, Status: StatusActive}
+			assert.NoError(t, a.SetSerialConfig(&SerialConfig{PortPath: "COM3", BaudRate: 115200, DataBits: 8, StopBits: "1", Parity: "none"}))
+			assert.True(t, a.CanConnect())
+		})
+
+		convey.Convey("端口路径为空时不可连接", func() {
+			a := &Asset{Name: "serial", Type: AssetTypeSerial, Status: StatusActive}
+			assert.NoError(t, a.SetSerialConfig(&SerialConfig{PortPath: "", BaudRate: 115200, DataBits: 8, StopBits: "1", Parity: "none"}))
+			assert.False(t, a.CanConnect())
+		})
+
+		convey.Convey("非活跃串口资产不可连接", func() {
+			a := &Asset{Name: "serial", Type: AssetTypeSerial, Status: StatusDeleted}
+			assert.NoError(t, a.SetSerialConfig(&SerialConfig{PortPath: "COM3", BaudRate: 115200, DataBits: 8, StopBits: "1", Parity: "none"}))
+			assert.False(t, a.CanConnect())
+		})
+	})
+}
+
 func TestAsset_SSHAddress(t *testing.T) {
 	convey.Convey("SSHAddress格式", t, func() {
 		a := &Asset{Name: "test", Type: AssetTypeSSH}
@@ -143,6 +241,46 @@ func TestAsset_SSHAddress(t *testing.T) {
 		addr, err := a.SSHAddress()
 		assert.NoError(t, err)
 		assert.Equal(t, "10.0.0.1:2222", addr)
+	})
+}
+
+func TestRedisConfig(t *testing.T) {
+	convey.Convey("Redis配置序列化与反序列化", t, func() {
+		a := &Asset{Name: "cache", Type: AssetTypeRedis}
+		cfg := &RedisConfig{
+			Host:                  "redis.example.com",
+			Port:                  6380,
+			Username:              "default",
+			Database:              2,
+			TLS:                   true,
+			TLSInsecure:           true,
+			TLSServerName:         "redis.internal",
+			TLSCAFile:             "/etc/redis/ca.pem",
+			TLSCertFile:           "/etc/redis/client.pem",
+			TLSKeyFile:            "/etc/redis/client-key.pem",
+			CommandTimeoutSeconds: 7,
+			ScanPageSize:          500,
+			KeySeparator:          "/",
+		}
+
+		err := a.SetRedisConfig(cfg)
+		assert.NoError(t, err)
+
+		got, err := a.GetRedisConfig()
+		assert.NoError(t, err)
+		assert.Equal(t, cfg.Host, got.Host)
+		assert.Equal(t, cfg.Port, got.Port)
+		assert.Equal(t, cfg.Username, got.Username)
+		assert.Equal(t, cfg.Database, got.Database)
+		assert.Equal(t, cfg.TLS, got.TLS)
+		assert.Equal(t, cfg.TLSInsecure, got.TLSInsecure)
+		assert.Equal(t, cfg.TLSServerName, got.TLSServerName)
+		assert.Equal(t, cfg.TLSCAFile, got.TLSCAFile)
+		assert.Equal(t, cfg.TLSCertFile, got.TLSCertFile)
+		assert.Equal(t, cfg.TLSKeyFile, got.TLSKeyFile)
+		assert.Equal(t, cfg.CommandTimeoutSeconds, got.CommandTimeoutSeconds)
+		assert.Equal(t, cfg.ScanPageSize, got.ScanPageSize)
+		assert.Equal(t, cfg.KeySeparator, got.KeySeparator)
 	})
 }
 
@@ -234,6 +372,70 @@ func TestValidateMongoDB(t *testing.T) {
 			})
 			err := a.Validate()
 			assert.Error(t, err)
+		})
+	})
+}
+
+func TestKafkaConfig(t *testing.T) {
+	convey.Convey("Kafka配置序列化与反序列化", t, func() {
+		a := &Asset{Name: "kafka", Type: AssetTypeKafka, Status: StatusActive}
+		cfg := &KafkaConfig{
+			Brokers:               []string{"broker-1:9092", "broker-2:9092"},
+			ClientID:              "opskat-test",
+			SASLMechanism:         KafkaSASLSCRAMSHA256,
+			Username:              "alice",
+			Password:              "encrypted",
+			TLS:                   true,
+			TLSInsecure:           true,
+			RequestTimeoutSeconds: 10,
+			MessagePreviewBytes:   2048,
+			MessageFetchLimit:     50,
+		}
+		err := a.SetKafkaConfig(cfg)
+		assert.NoError(t, err)
+
+		got, err := a.GetKafkaConfig()
+		assert.NoError(t, err)
+		assert.Equal(t, cfg.Brokers, got.Brokers)
+		assert.Equal(t, cfg.ClientID, got.ClientID)
+		assert.Equal(t, cfg.SASLMechanism, got.SASLMechanism)
+		assert.Equal(t, cfg.Username, got.Username)
+		assert.Equal(t, cfg.TLS, got.TLS)
+		assert.True(t, a.IsKafka())
+		assert.True(t, a.CanConnect())
+	})
+}
+
+func TestValidateKafka(t *testing.T) {
+	convey.Convey("Kafka资产校验", t, func() {
+		convey.Convey("明文连接配置完整时校验通过", func() {
+			a := &Asset{Name: "kafka", Type: AssetTypeKafka}
+			_ = a.SetKafkaConfig(&KafkaConfig{Brokers: []string{"localhost:9092"}})
+			assert.NoError(t, a.Validate())
+		})
+
+		convey.Convey("broker缺少端口应返回错误", func() {
+			a := &Asset{Name: "kafka", Type: AssetTypeKafka}
+			_ = a.SetKafkaConfig(&KafkaConfig{Brokers: []string{"localhost"}})
+			assert.Error(t, a.Validate())
+		})
+
+		convey.Convey("SASL启用时需要用户名和密码来源", func() {
+			a := &Asset{Name: "kafka", Type: AssetTypeKafka}
+			_ = a.SetKafkaConfig(&KafkaConfig{
+				Brokers:       []string{"localhost:9092"},
+				SASLMechanism: KafkaSASLPlain,
+			})
+			assert.Error(t, a.Validate())
+		})
+
+		convey.Convey("TLS证书和私钥必须成对配置", func() {
+			a := &Asset{Name: "kafka", Type: AssetTypeKafka}
+			_ = a.SetKafkaConfig(&KafkaConfig{
+				Brokers:     []string{"localhost:9092"},
+				TLSCertFile: "/tmp/client.pem",
+			})
+			assert.Error(t, a.Validate())
 		})
 	})
 }

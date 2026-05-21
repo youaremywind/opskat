@@ -24,8 +24,8 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@opskat/ui";
+import { DetectOpsctl } from "../../../wailsjs/go/system/System";
 import {
-  DetectOpsctl,
   GetOpsctlInstallDir,
   InstallOpsctl,
   DetectSkills,
@@ -35,13 +35,15 @@ import {
   GetAppVersion,
   OpenDirectory,
   GetPluginReferenceDir,
+} from "../../../wailsjs/go/system/System";
+import {
   ListAIProviders,
   CreateAIProvider,
   UpdateAIProvider,
   DeleteAIProvider,
   SetActiveAIProvider,
-} from "../../../wailsjs/go/app/App";
-import { app } from "../../../wailsjs/go/models";
+} from "../../../wailsjs/go/ai/AI";
+import { ai } from "../../../wailsjs/go/models";
 import {
   Check,
   Loader2,
@@ -57,7 +59,8 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { BrowserOpenURL } from "../../../wailsjs/runtime/runtime";
-import { AIProviderForm, type AIProviderFormValues } from "@/components/ai/AIProviderForm";
+import { AIProviderForm, type AIProviderFormValues, type ReasoningEffort } from "@/components/ai/AIProviderForm";
+import { useAIStore } from "@/stores/aiStore";
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -245,7 +248,7 @@ function IntegrationSection() {
                   variant="link"
                   size="sm"
                   className="h-auto p-0 text-xs"
-                  onClick={() => BrowserOpenURL("https://github.com/opskat/opskat/release")}
+                  onClick={() => BrowserOpenURL("https://github.com/opskat/opskat/releases")}
                 >
                   <ExternalLink className="h-3 w-3 mr-1" />
                   GitHub Releases
@@ -355,16 +358,17 @@ function IntegrationSection() {
 
 export function AISettingsSection() {
   const { t } = useTranslation();
-  const [providers, setProviders] = useState<app.AIProviderInfo[]>([]);
+  const [providers, setProviders] = useState<ai.AIProviderInfo[]>([]);
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [editingProvider, setEditingProvider] = useState<app.AIProviderInfo | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<app.AIProviderInfo | null>(null);
+  const [editingProvider, setEditingProvider] = useState<ai.AIProviderInfo | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<ai.AIProviderInfo | null>(null);
   const [saving, setSaving] = useState(false);
 
   const loadProviders = useCallback(async () => {
     try {
       const list = await ListAIProviders();
       setProviders(list || []);
+      await useAIStore.getState().checkConfigured();
     } catch (e) {
       toast.error(errMsg(e));
     }
@@ -379,7 +383,7 @@ export function AISettingsSection() {
     setDialogOpen(true);
   };
 
-  const openEditDialog = (provider: app.AIProviderInfo) => {
+  const openEditDialog = (provider: ai.AIProviderInfo) => {
     setEditingProvider(provider);
     setDialogOpen(true);
   };
@@ -396,7 +400,9 @@ export function AISettingsSection() {
           values.apiKey,
           values.model,
           values.maxOutputTokens,
-          values.contextWindow
+          values.contextWindow,
+          values.reasoningEnabled,
+          values.reasoningEffort
         );
       } else {
         const created = await CreateAIProvider(
@@ -406,7 +412,9 @@ export function AISettingsSection() {
           values.apiKey,
           values.model,
           values.maxOutputTokens,
-          values.contextWindow
+          values.contextWindow,
+          values.reasoningEnabled,
+          values.reasoningEffort
         );
         if (providers.length === 0 && created.id) {
           await SetActiveAIProvider(created.id);
@@ -525,6 +533,8 @@ export function AISettingsSection() {
                     model: editingProvider.model,
                     maxOutputTokens: editingProvider.maxOutputTokens,
                     contextWindow: editingProvider.contextWindow,
+                    reasoningEffort: (editingProvider.reasoningEffort ||
+                      (editingProvider.reasoningEnabled ? "medium" : "none")) as ReasoningEffort,
                   }
                 : undefined
             }

@@ -1,25 +1,31 @@
-import { useState } from "react";
+import { memo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ShieldAlert, Terminal, Database, Server, Globe, FolderOpen } from "lucide-react";
+import { ShieldAlert, Terminal, Database, Server, Globe, FolderOpen, FileEdit, FilePlus, Usb } from "lucide-react";
 import { Button, Input, Textarea } from "@opskat/ui";
-import { RespondAIApproval } from "../../../wailsjs/go/app/App";
-import { ai } from "../../../wailsjs/go/models";
+import { RespondAIApproval } from "../../../wailsjs/go/ai/AI";
+import { permission } from "../../../wailsjs/go/models";
 import type { ContentBlock } from "@/stores/aiStore";
 
 interface ApprovalBlockProps {
   block: ContentBlock;
 }
 
-export function ApprovalBlock({ block }: ApprovalBlockProps) {
+export const ApprovalBlock = memo(function ApprovalBlock({ block }: ApprovalBlockProps) {
   const { t } = useTranslation();
   const isPending = block.status === "pending_confirm";
   const items = block.approvalItems || [];
   const kind = block.approvalKind || "single";
+  const isLocalTool = kind === "local_tool";
+  const localToolName = block.approvalToolName || items[0]?.type || "";
+
+  // local_tool 在 rememberMode 用 approvalPatterns（多 sub-command 时多行），
+  // 其它 kind 沿用单条 item.command。
+  const initialPatterns = isLocalTool ? (block.approvalPatterns || []).join("\n") : "";
 
   const [editedCommands, setEditedCommands] = useState<Record<number, string>>(() => {
     const map: Record<number, string> = {};
     items.forEach((item, i) => {
-      map[i] = item.command;
+      map[i] = isLocalTool && i === 0 ? initialPatterns || item.command : item.command;
     });
     return map;
   });
@@ -32,12 +38,13 @@ export function ApprovalBlock({ block }: ApprovalBlockProps) {
   const respond = (decision: string) => {
     if (!block.confirmId) return;
 
-    const resp = new ai.ApprovalResponse();
+    const resp = new permission.ApprovalResponse();
     resp.decision = decision;
 
-    if ((kind === "grant" || (kind === "single" && decision === "allowAll")) && decision !== "deny") {
+    const carriesEdited = kind === "grant" || ((kind === "single" || kind === "local_tool") && decision === "allowAll");
+    if (carriesEdited && decision !== "deny") {
       resp.edited_items = items.map((item, i) => {
-        const edited = new ai.ApprovalItem();
+        const edited = new permission.ApprovalItem();
         edited.type = item.type;
         edited.asset_id = item.asset_id;
         edited.asset_name = item.asset_name;
@@ -63,14 +70,16 @@ export function ApprovalBlock({ block }: ApprovalBlockProps) {
               ? t("ai.approvalGrantTitle")
               : kind === "batch"
                 ? t("ai.approvalBatchTitle", { count: items.length })
-                : t("ai.approvalSingleTitle")}
+                : kind === "local_tool"
+                  ? t("ai.approvalLocalToolTitle", { tool: localToolName })
+                  : t("ai.approvalSingleTitle")}
           </span>
           {block.agentRole && (
             <span className="text-[10px] text-muted-foreground bg-muted rounded px-1 py-0.5">{block.agentRole}</span>
           )}
         </div>
         <span className="inline-flex items-center rounded-full bg-[#F59E0B20] h-5 px-2 text-[10px] font-semibold text-amber-500">
-          {t("ai.approvalPending", "等待确认")}
+          {t("ai.approvalPending")}
         </span>
       </div>
 
@@ -115,6 +124,18 @@ export function ApprovalBlock({ block }: ApprovalBlockProps) {
                   </code>
                 </div>
               )}
+              {isLocalTool && item.detail && (
+                <details className="text-[10px] text-muted-foreground/80">
+                  <summary className="cursor-pointer select-none">
+                    {item.type === "local_write"
+                      ? t("ai.approvalLocalToolContentPreview")
+                      : t("ai.approvalLocalToolEditPreview")}
+                  </summary>
+                  <pre className="mt-1.5 max-h-48 overflow-auto rounded bg-[#16120B] px-2 py-1.5 font-mono whitespace-pre-wrap break-all">
+                    {item.detail}
+                  </pre>
+                </details>
+              )}
             </div>
           )
         )}
@@ -128,7 +149,7 @@ export function ApprovalBlock({ block }: ApprovalBlockProps) {
         </div>
       )}
 
-      {/* Remember mode pattern editor (single only) */}
+      {/* Remember mode pattern editor */}
       {kind === "single" && rememberMode && (
         <div className="space-y-1.5 pt-0.5">
           <div className="text-[10px] text-muted-foreground">{t("opsctlApproval.patternLabel")}</div>
@@ -142,6 +163,19 @@ export function ApprovalBlock({ block }: ApprovalBlockProps) {
             />
           ))}
           <div className="text-[10px] text-muted-foreground/70">{t("opsctlApproval.patternHint")}</div>
+        </div>
+      )}
+      {kind === "local_tool" && rememberMode && (
+        <div className="space-y-1.5 pt-0.5">
+          <div className="text-[10px] text-muted-foreground">{t("opsctlApproval.patternLabel")}</div>
+          <Textarea
+            value={editedCommands[0] || ""}
+            onChange={(e) => setEditedCommands((prev) => ({ ...prev, 0: e.target.value }))}
+            className="font-mono text-[11px] min-h-[60px] resize-y bg-background border-border"
+            rows={Math.max(2, (editedCommands[0] || "").split("\n").length)}
+            placeholder={t("opsctlApproval.patternPlaceholder")}
+          />
+          <div className="text-[10px] text-muted-foreground/70">{t("ai.approvalLocalToolPatternHint")}</div>
         </div>
       )}
 
@@ -184,6 +218,7 @@ export function ApprovalBlock({ block }: ApprovalBlockProps) {
             </Button>
           </>
         ) : (
+          // single & local_tool: deny / remember-and-allow / allow（仅本次）
           <>
             <Button
               size="sm"
@@ -224,14 +259,20 @@ export function ApprovalBlock({ block }: ApprovalBlockProps) {
       </div>
     </div>
   );
-}
+});
 
 function TypeBadge({ type, compact }: { type: string; compact?: boolean }) {
   const icons: Record<string, typeof Terminal> = {
     exec: Terminal,
+    serial: Usb,
     sql: Database,
     redis: Server,
+    mongo: Database,
+    kafka: Database,
     grant: Globe,
+    local_bash: Terminal,
+    local_write: FilePlus,
+    local_edit: FileEdit,
   };
   const Icon = icons[type] || Terminal;
   if (compact) {

@@ -4,10 +4,12 @@ import { Play, X } from "lucide-react";
 import { toast } from "sonner";
 import { Button, Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@opskat/ui";
 import { AssetMultiSelect } from "@/components/asset/AssetMultiSelect";
+import { filterAssetTreeAssets } from "@/lib/assetTree";
 import { useAssetStore } from "@/stores/assetStore";
 import { useSnippetStore } from "@/stores/snippetStore";
 import { snippet_entity } from "../../../wailsjs/go/models";
-import { GetSnippetLastAssets, SetSnippetLastAssets, RecordSnippetUse } from "../../../wailsjs/go/app/App";
+import { GetSnippetLastAssets } from "../../../wailsjs/go/extension/Extension";
+import { SetSnippetLastAssets, RecordSnippetUse } from "../../../wailsjs/go/extension/Extension";
 import { runSnippetOnAsset } from "./snippetRun";
 
 interface SnippetAssetDrawerProps {
@@ -25,7 +27,7 @@ export function SnippetAssetDrawer({ snippet, onClose }: SnippetAssetDrawerProps
   const assetType = category?.assetType ?? "";
 
   const matchingAssetIds = useMemo(
-    () => new Set(allAssets.filter((a) => a.Type === assetType && a.Status === 1).map((a) => a.ID)),
+    () => new Set(filterAssetTreeAssets(allAssets, { filterType: assetType, activeOnly: true }).map((a) => a.ID)),
     [allAssets, assetType]
   );
 

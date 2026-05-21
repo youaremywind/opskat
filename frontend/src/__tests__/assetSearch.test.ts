@@ -1,6 +1,9 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll } from "vitest";
 import { buildGroupPathMap, filterAssets } from "@/lib/assetSearch";
+import { __ensurePinyinReady } from "@/lib/pinyin";
 import type { asset_entity, group_entity } from "../../wailsjs/go/models";
+
+beforeAll(() => __ensurePinyinReady());
 
 function asset(id: number, name: string, groupId = 0): asset_entity.Asset {
   return { ID: id, Name: name, GroupID: groupId } as asset_entity.Asset;
@@ -22,6 +25,13 @@ describe("buildGroupPathMap", () => {
     const groups = [group(2, "孤儿", 999)];
     const map = buildGroupPathMap(groups);
     expect(map.get(2)).toBe("孤儿");
+  });
+
+  it("parent 链成环时按当前组视角截断路径", () => {
+    const groups = [group(1, "A", 2), group(2, "B", 1)];
+    const map = buildGroupPathMap(groups);
+    expect(map.get(1)).toBe("B/A");
+    expect(map.get(2)).toBe("A/B");
   });
 });
 

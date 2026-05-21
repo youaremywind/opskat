@@ -12,9 +12,9 @@ import {
   Textarea,
 } from "@opskat/ui";
 import { useWailsEvent } from "@/hooks/useWailsEvent";
-import { RespondOpsctlApproval } from "../../../wailsjs/go/app/App";
-import { ai } from "../../../wailsjs/go/models";
-import { ShieldAlert, Terminal, Database, Server, FolderOpen, Globe } from "lucide-react";
+import { RespondOpsctlApproval } from "../../../wailsjs/go/opsctl/Opsctl";
+import { permission } from "../../../wailsjs/go/models";
+import { ShieldAlert, Terminal, Database, Server, FolderOpen, Globe, Usb } from "lucide-react";
 
 interface ApprovalItemData {
   type: string;
@@ -58,7 +58,14 @@ interface QueueItem {
 }
 
 function TypeBadge({ type }: { type: string }) {
-  const icons: Record<string, typeof Terminal> = { exec: Terminal, sql: Database, redis: Server };
+  const icons: Record<string, typeof Terminal> = {
+    exec: Terminal,
+    serial: Usb,
+    sql: Database,
+    redis: Server,
+    mongo: Database,
+    kafka: Database,
+  };
   const Icon = icons[type] || Terminal;
   return (
     <span className="inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground bg-muted">
@@ -189,7 +196,7 @@ export function OpsctlApprovalDialog() {
     (decision: string) => {
       if (!current) return;
 
-      const resp = new ai.ApprovalResponse();
+      const resp = new permission.ApprovalResponse();
       resp.decision = decision;
 
       const shouldSendEdits =
@@ -198,7 +205,7 @@ export function OpsctlApprovalDialog() {
       if (shouldSendEdits) {
         const edits = editState[current.id] || {};
         resp.edited_items = current.items.map((item, i) => {
-          const edited = new ai.ApprovalItem();
+          const edited = new permission.ApprovalItem();
           edited.type = item.type;
           edited.asset_id = item.asset_id;
           edited.asset_name = item.asset_name;

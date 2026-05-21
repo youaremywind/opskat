@@ -23,8 +23,8 @@ import {
   Input,
   Switch,
 } from "@opskat/ui";
+import { GetAppVersion } from "../../../wailsjs/go/system/System";
 import {
-  GetAppVersion,
   GetUpdateChannel,
   SetUpdateChannel,
   CheckForUpdate,
@@ -36,13 +36,14 @@ import {
   GetDebugMode,
   SetDebugMode,
   OpenLogsDir,
-} from "../../../wailsjs/go/app/App";
+  RestartApp,
+} from "../../../wailsjs/go/system/System";
 import { Bug, Download, FolderOpen, Loader2, ExternalLink, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
-import { BrowserOpenURL, Quit } from "../../../wailsjs/runtime/runtime";
-import { EventsOn } from "../../../wailsjs/runtime/runtime";
+import { BrowserOpenURL, EventsOn } from "../../../wailsjs/runtime/runtime";
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
+const REPOSITORY_URL = "https://github.com/opskat/opskat";
 
 export function UpdateSection() {
   const { t } = useTranslation();
@@ -64,6 +65,7 @@ export function UpdateSection() {
   const [customMirror, setCustomMirror] = useState("");
   const [showChecksumDialog, setShowChecksumDialog] = useState(false);
   const [debugMode, setDebugModeState] = useState(false);
+  const [restarting, setRestarting] = useState(false);
 
   useEffect(() => {
     GetAppVersion()
@@ -118,7 +120,7 @@ export function UpdateSection() {
     } catch {
       // 取不到诊断信息时仍然打开模板，让用户手动填写
     }
-    BrowserOpenURL(`https://github.com/opskat/opskat/issues/new?${params.toString()}`);
+    BrowserOpenURL(`${REPOSITORY_URL}/issues/new?${params.toString()}`);
   };
 
   const handleChannelChange = async (value: string) => {
@@ -207,6 +209,16 @@ export function UpdateSection() {
     }
   };
 
+  const handleRestart = async () => {
+    setRestarting(true);
+    try {
+      await RestartApp();
+    } catch (e: unknown) {
+      setRestarting(false);
+      toast.error(errMsg(e));
+    }
+  };
+
   return (
     <Card>
       <CardHeader>
@@ -217,6 +229,20 @@ export function UpdateSection() {
         <div className="flex justify-between items-center text-sm">
           <span className="text-muted-foreground">{t("appUpdate.currentVersion")}</span>
           <span className="font-mono text-xs">{currentVersion || "dev"}</span>
+        </div>
+
+        <div className="flex justify-between items-center gap-3 text-sm">
+          <span className="text-muted-foreground">{t("appUpdate.openRepository")}</span>
+          <Button
+            onClick={() => BrowserOpenURL(REPOSITORY_URL)}
+            size="sm"
+            variant="link"
+            className="h-auto min-w-0 p-0 text-right text-xs font-mono"
+            title={t("appUpdate.openRepositoryDesc")}
+          >
+            <span className="truncate">{REPOSITORY_URL}</span>
+            <ExternalLink className="ml-1 h-3 w-3 shrink-0" />
+          </Button>
         </div>
 
         <div className="flex justify-between items-center text-sm">
@@ -351,7 +377,8 @@ export function UpdateSection() {
               </Button>
             ) : (
               <div className="flex gap-2">
-                <Button onClick={() => Quit()} size="sm">
+                <Button onClick={handleRestart} size="sm" disabled={restarting}>
+                  {restarting && <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />}
                   {t("appUpdate.restartNow")}
                 </Button>
                 <Button variant="outline" size="sm" onClick={() => setUpdateDone(false)}>

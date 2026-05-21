@@ -1,8 +1,8 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { asset_entity, group_entity } from "../../wailsjs/go/models";
+import { ListAssets } from "../../wailsjs/go/system/System";
 import {
-  ListAssets,
   CreateAsset,
   UpdateAsset,
   DeleteAsset,
@@ -11,7 +11,9 @@ import {
   CreateGroup,
   UpdateGroup,
   DeleteGroup,
-} from "../../wailsjs/go/app/App";
+} from "../../wailsjs/go/system/System";
+import { useRecentAssetStore } from "./recentAssetStore";
+import { formatAssetPath } from "@/lib/groupPath";
 
 interface AssetState {
   assets: asset_entity.Asset[];
@@ -77,6 +79,7 @@ export const useAssetStore = create<AssetState>()(
 
       deleteAsset: async (id) => {
         await DeleteAsset(id);
+        useRecentAssetStore.getState().remove(id);
         set({ selectedAssetId: null });
         await get().refresh();
       },
@@ -87,15 +90,7 @@ export const useAssetStore = create<AssetState>()(
 
       getAssetPath: (asset) => {
         const { groups } = get();
-        const parts: string[] = [asset.Name];
-        let groupId = asset.GroupID;
-        while (groupId > 0) {
-          const group = groups.find((g) => g.ID === groupId);
-          if (!group) break;
-          parts.unshift(group.Name);
-          groupId = group.ParentID;
-        }
-        return parts.join(" / ");
+        return formatAssetPath(asset, groups, { separator: " / " });
       },
 
       createGroup: async (group) => {

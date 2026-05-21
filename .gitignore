@@ -28,8 +28,6 @@ internal/embedded/opsctl_bin
 coverage.out
 coverage.html
 
-superpowers
-!docs/superpowers
 .omc
 
 coverage_new.out
@@ -42,3 +40,6 @@ coverage_new.out
 /pkg/extension/testdata/tcp_e2e_fixture.wasm
 
 .idea
+
+.github/pr-assets/
+.gocache/

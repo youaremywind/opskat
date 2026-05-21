@@ -1,23 +1,8 @@
+import { lazy, Suspense, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Loader2 } from "lucide-react";
 import logoLight from "@/assets/images/logo.png";
 import logoDark from "@/assets/images/logo-dark.png";
-import { useFullscreen } from "@/hooks/useFullscreen";
-import { AssetDetail } from "@/components/asset/AssetDetail";
-import { GroupDetail } from "@/components/asset/GroupDetail";
-import { SplitPane } from "@/components/terminal/SplitPane";
-import { SessionToolbar } from "@/components/terminal/SessionToolbar";
-import { TerminalToolbar } from "@/components/terminal/TerminalToolbar";
-import { FileManagerPanel } from "@/components/terminal/FileManagerPanel";
-import { SettingsPage } from "@/components/settings/SettingsPage";
-import { CredentialManager } from "@/components/settings/CredentialManager";
-import { AuditLogPage } from "@/components/audit/AuditLogPage";
-import { PortForwardPage } from "@/components/forward/PortForwardPage";
-import { SnippetsPage } from "@/components/snippet/SnippetsPage";
-import { AIChatContent } from "@/components/ai/AIChatContent";
-import { DatabasePanel } from "@/components/query/DatabasePanel";
-import { RedisPanel } from "@/components/query/RedisPanel";
-import { MongoDBPanel } from "@/components/query/MongoDBPanel";
 import { useTerminalStore } from "@/stores/terminalStore";
 import { useAssetStore } from "@/stores/assetStore";
 import { useTabStore, type QueryTabMeta, type PageTabMeta, type InfoTabMeta } from "@/stores/tabStore";
@@ -28,15 +13,60 @@ import { ExtensionPage } from "@/extension";
 import { TopTabBar } from "./TopTabBar";
 import { useLayoutStore } from "@/stores/layoutStore";
 
+const AssetDetail = lazy(() => import("@/components/asset/AssetDetail").then((m) => ({ default: m.AssetDetail })));
+const GroupDetail = lazy(() => import("@/components/asset/GroupDetail").then((m) => ({ default: m.GroupDetail })));
+const SplitPane = lazy(() => import("@/components/terminal/SplitPane").then((m) => ({ default: m.SplitPane })));
+const SessionToolbar = lazy(() =>
+  import("@/components/terminal/SessionToolbar").then((m) => ({ default: m.SessionToolbar }))
+);
+const TerminalToolbar = lazy(() =>
+  import("@/components/terminal/TerminalToolbar").then((m) => ({ default: m.TerminalToolbar }))
+);
+const FileManagerPanel = lazy(() =>
+  import("@/components/terminal/FileManagerPanel").then((m) => ({ default: m.FileManagerPanel }))
+);
+const SettingsPage = lazy(() =>
+  import("@/components/settings/SettingsPage").then((m) => ({ default: m.SettingsPage }))
+);
+const CredentialManager = lazy(() =>
+  import("@/components/settings/CredentialManager").then((m) => ({ default: m.CredentialManager }))
+);
+const AuditLogPage = lazy(() => import("@/components/audit/AuditLogPage").then((m) => ({ default: m.AuditLogPage })));
+const PortForwardPage = lazy(() =>
+  import("@/components/forward/PortForwardPage").then((m) => ({ default: m.PortForwardPage }))
+);
+const SnippetsPage = lazy(() => import("@/components/snippet/SnippetsPage").then((m) => ({ default: m.SnippetsPage })));
+const AIChatContent = lazy(() => import("@/components/ai/AIChatContent").then((m) => ({ default: m.AIChatContent })));
+const DatabasePanel = lazy(() =>
+  import("@/components/query/DatabasePanel").then((m) => ({ default: m.DatabasePanel }))
+);
+const RedisPanel = lazy(() => import("@/components/query/RedisPanel").then((m) => ({ default: m.RedisPanel })));
+const MongoDBPanel = lazy(() => import("@/components/query/MongoDBPanel").then((m) => ({ default: m.MongoDBPanel })));
+const KafkaPanel = lazy(() => import("@/components/query/KafkaPanel").then((m) => ({ default: m.KafkaPanel })));
+const K8sClusterPage = lazy(() =>
+  import("@/components/k8s/K8sClusterPage").then((m) => ({ default: m.K8sClusterPage }))
+);
+
 interface MainPanelProps {
   onEditAsset: (asset: asset_entity.Asset) => void;
   onDeleteAsset: (id: number) => void;
   onConnectAsset: (asset: asset_entity.Asset) => void;
 }
 
+function PanelFallback() {
+  return (
+    <div className="flex h-full items-center justify-center bg-background">
+      <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+    </div>
+  );
+}
+
+function LazySurface({ children }: { children: ReactNode }) {
+  return <Suspense fallback={<PanelFallback />}>{children}</Suspense>;
+}
+
 export function MainPanel({ onEditAsset, onDeleteAsset, onConnectAsset }: MainPanelProps) {
   const { t } = useTranslation();
-  const isFullscreen = useFullscreen();
 
   const tabs = useTabStore((s) => s.tabs);
   const activeTabId = useTabStore((s) => s.activeTabId);
@@ -75,11 +105,8 @@ export function MainPanel({ onEditAsset, onDeleteAsset, onConnectAsset }: MainPa
   const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null;
   const hasTabs = tabs.length > 0;
 
-  // Collect all terminal tabs for visibility-based rendering
   const terminalTabs = tabs.filter((tab) => tab.type === "terminal");
-  // Collect AI tabs for visibility-based rendering
   const aiTabs = tabs.filter((tab) => tab.type === "ai");
-  // Collect query tabs for visibility-based rendering
   const queryTabs = tabs.filter((tab) => tab.type === "query");
 
   function renderActiveContent() {
@@ -126,6 +153,11 @@ export function MainPanel({ onEditAsset, onDeleteAsset, onConnectAsset }: MainPa
                 <SnippetsPage />
               </div>
             );
+          case "k8s-cluster": {
+            const k8sAsset = meta.assetId ? assets.find((a) => a.ID === meta.assetId) : null;
+            if (!k8sAsset) return null;
+            return <K8sClusterPage asset={k8sAsset} />;
+          }
           default:
             if (meta.extensionName) {
               return <ExtensionPage extensionName={meta.extensionName} pageId={meta.pageId} assetId={meta.assetId} />;
@@ -181,14 +213,6 @@ export function MainPanel({ onEditAsset, onDeleteAsset, onConnectAsset }: MainPa
 
   return (
     <div className="flex flex-1 flex-col min-w-0">
-      {/* When no tabs, show standalone drag region; also always shown in left layout (TopTabBar absent) */}
-      {(!hasTabs || tabBarLayout === "left") && (
-        <div
-          className={`${isFullscreen ? "h-0" : "h-8"} w-full shrink-0`}
-          style={{ "--wails-draggable": "drag" } as React.CSSProperties}
-        />
-      )}
-
       {/* Tab bar with integrated drag region (top layout only) */}
       {hasTabs && tabBarLayout === "top" && <TopTabBar />}
 
@@ -207,31 +231,34 @@ export function MainPanel({ onEditAsset, onDeleteAsset, onConnectAsset }: MainPa
                 pointerEvents: isActive ? "auto" : "none",
               }}
             >
-              <SessionToolbar tabId={tab.id} />
-              <div className="flex-1 min-h-0 overflow-hidden flex">
-                <div className="flex-1 min-w-0 overflow-hidden">
-                  {data && (
-                    <SplitPane
-                      node={data.splitTree}
+              <LazySurface>
+                <SessionToolbar tabId={tab.id} />
+                <div className="flex-1 min-h-0 overflow-hidden flex">
+                  <div className="flex-1 min-w-0 overflow-hidden">
+                    {data && (
+                      <SplitPane
+                        node={data.splitTree}
+                        tabId={tab.id}
+                        isTabActive={isActive}
+                        activePaneId={data.activePaneId}
+                        showFocusRing={data.splitTree.type === "split"}
+                        path={[]}
+                      />
+                    )}
+                  </div>
+                  {data?.activePaneId && (
+                    <FileManagerPanel
                       tabId={tab.id}
-                      isTabActive={isActive}
-                      activePaneId={data.activePaneId}
-                      showFocusRing={data.splitTree.type === "split"}
-                      path={[]}
+                      sessionId={data.activePaneId}
+                      isActive={isActive}
+                      isOpen={!!fileManagerOpenTabs[tab.id]}
+                      width={fileManagerWidth}
+                      onWidthChange={setFileManagerWidth}
                     />
                   )}
                 </div>
-                {data?.activePaneId && (
-                  <FileManagerPanel
-                    tabId={tab.id}
-                    sessionId={data.activePaneId}
-                    isOpen={!!fileManagerOpenTabs[tab.id]}
-                    width={fileManagerWidth}
-                    onWidthChange={setFileManagerWidth}
-                  />
-                )}
-              </div>
-              <TerminalToolbar tabId={tab.id} />
+                <TerminalToolbar tabId={tab.id} />
+              </LazySurface>
             </div>
           );
         })}
@@ -248,11 +275,18 @@ export function MainPanel({ onEditAsset, onDeleteAsset, onConnectAsset }: MainPa
                 pointerEvents: isActive ? "auto" : "none",
               }}
             >
-              <AIChatContent tabId={tab.id} />
+              <LazySurface>
+                <AIChatContent tabId={tab.id} />
+              </LazySurface>
             </div>
           );
         })}
 
+        {activeTab && activeTab.type === "page" && (
+          <div className="absolute inset-0 bg-background">
+            <LazySurface>{renderActiveContent()}</LazySurface>
+          </div>
+        )}
         {/* Query tabs: display-based — sticky thead would leak as a composited
             layer if the parent only toggled visibility. State is in zustand,
             so display:none is safe here. */}
@@ -265,20 +299,26 @@ export function MainPanel({ onEditAsset, onDeleteAsset, onConnectAsset }: MainPa
               className="absolute inset-0 bg-background"
               style={{ display: isActive ? "block" : "none" }}
             >
-              {meta.assetType === "database" ? (
-                <DatabasePanel tabId={tab.id} />
-              ) : meta.assetType === "redis" ? (
-                <RedisPanel tabId={tab.id} />
-              ) : (
-                <MongoDBPanel tabId={tab.id} />
-              )}
+              <LazySurface>
+                {meta.assetType === "database" ? (
+                  <DatabasePanel tabId={tab.id} />
+                ) : meta.assetType === "redis" ? (
+                  <RedisPanel tabId={tab.id} />
+                ) : meta.assetType === "kafka" ? (
+                  <KafkaPanel tabId={tab.id} />
+                ) : (
+                  <MongoDBPanel tabId={tab.id} />
+                )}
+              </LazySurface>
             </div>
           );
         })}
 
         {/* Page and info tabs: rendered only when active */}
-        {activeTab && (activeTab.type === "page" || activeTab.type === "info") && (
-          <div className="absolute inset-0 bg-background">{renderActiveContent()}</div>
+        {activeTab && activeTab.type === "info" && (
+          <div className="absolute inset-0 bg-background">
+            <LazySurface>{renderActiveContent()}</LazySurface>
+          </div>
         )}
 
         {/* Welcome screen when no active tab */}

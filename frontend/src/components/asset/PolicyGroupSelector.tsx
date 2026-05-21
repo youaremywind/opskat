@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { Plus, X, Shield, Lock, Puzzle } from "lucide-react";
 import { Button, Popover, PopoverContent, PopoverTrigger } from "@opskat/ui";
-import { ListPolicyGroups } from "../../../wailsjs/go/app/App";
+import { ListPolicyGroups } from "../../../wailsjs/go/system/System";
 import { loadExtensionLocales } from "@/extension/i18n";
 import type { policy_group_entity } from "../../../wailsjs/go/models";
 
@@ -15,8 +15,12 @@ interface PolicyGroupSelectorProps {
 
 const policyTypeMap: Record<string, string> = {
   ssh: "command",
+  k8s: "command",
   database: "query",
   redis: "redis",
+  mongodb: "mongo",
+  mongo: "mongo",
+  kafka: "kafka",
 };
 
 /** 获取内置权限组的 i18n 短 ID（去掉 builtin: 前缀） */

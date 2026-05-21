@@ -1,7 +1,6 @@
 import { createContext, useContext, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { X, MessageSquare, Server, Folder } from "lucide-react";
-import { useFullscreen } from "@/hooks/useFullscreen";
 import { useTabDragAndDrop } from "@/hooks/useTabDragAndDrop";
 import { useTabStore, type Tab, type InfoTabMeta } from "@/stores/tabStore";
 import { useTerminalStore } from "@/stores/terminalStore";
@@ -83,6 +82,8 @@ function TabItem({
           <span className="truncate min-w-0">{label}</span>
           {extra}
           <button
+            type="button"
+            aria-label={t("tab.close")}
             className="ml-auto shrink-0 rounded-sm p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors duration-150"
             onClick={(e) => {
               e.stopPropagation();
@@ -138,7 +139,6 @@ function TabItem({
 
 export function TopTabBar() {
   const { t } = useTranslation();
-  const isFullscreen = useFullscreen();
 
   const tabs = useTabStore((s) => s.tabs);
   const activeTabId = useTabStore((s) => s.activeTabId);
@@ -281,11 +281,11 @@ export function TopTabBar() {
     <TabBarContext.Provider value={tabBarCtx}>
       <div
         data-top-tabbar
-        className={`flex items-center border-b overflow-hidden bg-background ${isFullscreen ? "pt-0" : "pt-8"}`}
+        className="flex items-center border-b overflow-hidden bg-background"
         style={{ "--wails-draggable": "drag" } as React.CSSProperties}
       >
         <div className="flex items-center min-w-0 flex-1">{tabs.map((tab) => renderTabItem(tab))}</div>
-        <TabFilterPopover open={filterOpen} onOpenChange={setFilterOpen}>
+        <TabFilterPopover open={filterOpen} onOpenChange={setFilterOpen} tabs={tabs}>
           <div
             className="flex items-center shrink-0 px-1"
             style={{ "--wails-draggable": "no-drag" } as React.CSSProperties}

@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Eye, EyeOff, Loader2 } from "lucide-react";
 import { Button, Input, Label, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@opskat/ui";
 import { credential_entity } from "../../../wailsjs/go/models";
-import { GetAssetPassword } from "../../../wailsjs/go/app/App";
+import { GetAssetPassword } from "../../../wailsjs/go/system/System";
 
 interface PasswordSourceFieldProps {
   source: "inline" | "managed";
@@ -19,6 +19,12 @@ interface PasswordSourceFieldProps {
   hasExistingPassword?: boolean;
   /** Asset ID for decrypting existing password on reveal */
   editAssetId?: number;
+  /** Override label for inline secret input. */
+  secretLabel?: string;
+  /** Override label for managed secret selector. */
+  selectSecretLabel?: string;
+  /** Fires when the selected credential has a non-empty username; passes it to the parent. */
+  onUsernameChange?: (username: string) => void;
 }
 
 export function PasswordSourceField({
@@ -32,6 +38,9 @@ export function PasswordSourceField({
   placeholder = "",
   hasExistingPassword = false,
   editAssetId,
+  secretLabel,
+  selectSecretLabel,
+  onUsernameChange,
 }: PasswordSourceFieldProps) {
   const { t } = useTranslation();
   const [showPassword, setShowPassword] = useState(false);
@@ -73,7 +82,7 @@ export function PasswordSourceField({
       </div>
       {source === "inline" ? (
         <div className="grid gap-2">
-          <Label>{t("asset.password")}</Label>
+          <Label>{secretLabel || t("asset.password")}</Label>
           <div className="relative">
             <Input
               type={showPassword ? "text" : "password"}
@@ -102,9 +111,21 @@ export function PasswordSourceField({
         </div>
       ) : (
         <div className="grid gap-2">
-          <Label>{t("asset.selectPassword")}</Label>
+          <Label>{selectSecretLabel || t("asset.selectPassword")}</Label>
           {managedPasswords.length > 0 ? (
-            <Select value={String(credentialId)} onValueChange={(v) => onCredentialIdChange(Number(v))}>
+            <Select
+              value={String(credentialId)}
+              onValueChange={(v) => {
+                const id = Number(v);
+                onCredentialIdChange(id);
+                if (id !== 0 && onUsernameChange) {
+                  const cred = managedPasswords.find((p) => p.id === id);
+                  if (cred && cred.username) {
+                    onUsernameChange(cred.username);
+                  }
+                }
+              }}
+            >
               <SelectTrigger>
                 <SelectValue placeholder={t("asset.selectPasswordPlaceholder")} />
               </SelectTrigger>

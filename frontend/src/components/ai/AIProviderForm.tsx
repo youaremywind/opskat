@@ -15,14 +15,17 @@ import {
   ScrollableContainer,
 } from "@opskat/ui";
 import { Check, ChevronsUpDown, Loader2, RefreshCw } from "lucide-react";
-import { FetchAIModels, GetModelDefaults } from "../../../wailsjs/go/app/App";
-import { app } from "../../../wailsjs/go/models";
+import { FetchAIModels } from "../../../wailsjs/go/ai/AI";
+import { GetModelDefaults } from "../../../wailsjs/go/ai/AI";
+import { ai } from "../../../wailsjs/go/models";
 import { toast } from "sonner";
 
-export function getDefaultApiBase(providerType: string): string {
+function getDefaultApiBase(providerType: string): string {
   if (providerType === "anthropic") return "https://api.anthropic.com";
   return "https://api.openai.com/v1";
 }
+
+export type ReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh" | "max";
 
 export interface AIProviderFormValues {
   name: string;
@@ -32,6 +35,19 @@ export interface AIProviderFormValues {
   model: string;
   maxOutputTokens: number;
   contextWindow: number;
+  reasoningEnabled: boolean;
+  reasoningEffort: ReasoningEffort;
+}
+
+function supportsOpenAIReasoningModel(model: string): boolean {
+  const lower = model.trim().toLowerCase();
+  return (
+    lower.startsWith("o1") ||
+    lower.startsWith("o3") ||
+    lower.startsWith("o4") ||
+    lower.startsWith("gpt-5") ||
+    lower.startsWith("deepseek")
+  );
 }
 
 export interface AIProviderFormProps {
@@ -44,6 +60,7 @@ export interface AIProviderFormProps {
     model: string;
     maxOutputTokens: number;
     contextWindow: number;
+    reasoningEffort: ReasoningEffort;
   };
   isEditing?: boolean;
   /** Locks the provider type (used by wizard where cards handle type selection) */
@@ -74,11 +91,26 @@ export function AIProviderForm({
   const [formModel, setFormModel] = useState(initialValues?.model ?? "");
   const [formMaxOutputTokens, setFormMaxOutputTokens] = useState(initialValues?.maxOutputTokens ?? 0);
   const [formContextWindow, setFormContextWindow] = useState(initialValues?.contextWindow ?? 0);
+  const [formReasoningEffort, setFormReasoningEffort] = useState<ReasoningEffort>(
+    initialValues?.reasoningEffort ?? "none"
+  );
 
-  const [modelOptions, setModelOptions] = useState<app.AIModelInfo[]>([]);
+  const [modelOptions, setModelOptions] = useState<ai.AIModelInfo[]>([]);
   const [modelPopoverOpen, setModelPopoverOpen] = useState(false);
   const [modelSearch, setModelSearch] = useState("");
   const [fetchingModels, setFetchingModels] = useState(false);
+  const isOpenAIProvider = formType === "openai";
+  const isAnthropicProvider = formType === "anthropic";
+  const showReasoningPanel = isOpenAIProvider || isAnthropicProvider;
+  // OpenAI 的 hint 区分模型是否支持 reasoning；Anthropic 不做模型校验，由 API 自行裁定。
+  const currentModelSupportsReasoning = supportsOpenAIReasoningModel(formModel);
+
+  // 切到非 Anthropic 时，max 档不再可见，降级到 high 避免 Select 显示空值。
+  useEffect(() => {
+    if (formType !== "anthropic" && formReasoningEffort === "max") {
+      setFormReasoningEffort("high");
+    }
+  }, [formType, formReasoningEffort]);
 
   // When external providerType prop changes (wizard card click), reset relevant fields
   useEffect(() => {
@@ -90,6 +122,7 @@ export function AIProviderForm({
       setFormModel("");
       setFormMaxOutputTokens(0);
       setFormContextWindow(0);
+      setFormReasoningEffort("none");
       setModelOptions([]);
     }
   }, [externalType, t]);
@@ -118,7 +151,7 @@ export function AIProviderForm({
   }, [formApiKey, formType, formApiBase, t]);
 
   const handleSelectModel = useCallback(
-    (model: app.AIModelInfo) => {
+    (model: ai.AIModelInfo) => {
       setFormModel(model.id);
       setModelPopoverOpen(false);
       if (model.maxOutputTokens > 0) {
@@ -161,6 +194,8 @@ export function AIProviderForm({
       model: formModel,
       maxOutputTokens: formMaxOutputTokens,
       contextWindow: formContextWindow,
+      reasoningEnabled: showReasoningPanel && formReasoningEffort !== "none",
+      reasoningEffort: formReasoningEffort,
     });
   };
 
@@ -207,6 +242,8 @@ export function AIProviderForm({
                   <button
                     type="button"
                     className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                    aria-label={t("settings.selectModel")}
+                    title={t("settings.selectModel")}
                     onClick={() => setModelPopoverOpen(!modelPopoverOpen)}
                   >
                     <ChevronsUpDown className="h-4 w-4" />
@@ -301,6 +338,33 @@ export function AIProviderForm({
           <p className="text-xs text-muted-foreground">{t("settings.contextWindowHint")}</p>
         </div>
       </div>
+
+      {showReasoningPanel && (
+        <div className="rounded-lg border p-4 space-y-2">
+          <Label>{t("settings.reasoningEffort")}</Label>
+          <Select
+            value={formReasoningEffort}
+            onValueChange={(value) => setFormReasoningEffort(value as ReasoningEffort)}
+          >
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="none">{t("settings.reasoningEffortNone")}</SelectItem>
+              <SelectItem value="low">{t("settings.reasoningEffortLow")}</SelectItem>
+              <SelectItem value="medium">{t("settings.reasoningEffortMedium")}</SelectItem>
+              <SelectItem value="high">{t("settings.reasoningEffortHigh")}</SelectItem>
+              <SelectItem value="xhigh">{t("settings.reasoningEffortXHigh")}</SelectItem>
+              {isAnthropicProvider && <SelectItem value="max">{t("settings.reasoningEffortMax")}</SelectItem>}
+            </SelectContent>
+          </Select>
+          <p className="text-xs text-muted-foreground">
+            {isAnthropicProvider || currentModelSupportsReasoning || !formModel
+              ? t("settings.reasoningEffortHint")
+              : t("settings.reasoningEffortUnsupportedHint")}
+          </p>
+        </div>
+      )}
 
       <Button
         onClick={handleSubmit}

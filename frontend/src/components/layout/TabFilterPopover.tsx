@@ -1,8 +1,8 @@
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useState } from "react";
 import type { ReactElement } from "react";
 import { useTranslation } from "react-i18next";
 import { Popover, PopoverAnchor, PopoverContent } from "@opskat/ui";
-import { useTabStore } from "@/stores/tabStore";
+import { useTabStore, type Tab } from "@/stores/tabStore";
 import { filterMatches, highlightMatch } from "@/lib/highlightMatch";
 import { TabFilterInput } from "./TabFilterInput";
 import { resolveTabLabel } from "./pageTabMeta";
@@ -12,25 +12,26 @@ interface TabFilterPopoverProps {
   onOpenChange: (open: boolean) => void;
   /** Real DOM element to anchor against — typically the container of the ⋯ button */
   children: ReactElement;
+  tabs: Tab[];
 }
 
-export function TabFilterPopover({ open, onOpenChange, children }: TabFilterPopoverProps) {
+export function TabFilterPopover({ open, onOpenChange, children, tabs }: TabFilterPopoverProps) {
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
   const [cursor, setCursor] = useState(0);
-  const tabs = useTabStore((s) => s.tabs);
   const activateTab = useTabStore((s) => s.activateTab);
-
-  useEffect(() => {
-    if (!open) {
-      setQuery("");
-      setCursor(0);
-    }
-  }, [open]);
 
   const items = useMemo(() => tabs.map((tab) => ({ tab, label: resolveTabLabel(tab, t) })), [tabs, t]);
 
   const matched = useMemo(() => items.filter(({ label }) => filterMatches(label, query)), [items, query]);
+
+  const handleOpenChange = (nextOpen: boolean) => {
+    if (!nextOpen) {
+      setQuery("");
+      setCursor(0);
+    }
+    onOpenChange(nextOpen);
+  };
 
   const activate = (id: string) => {
     activateTab(id);
@@ -39,7 +40,7 @@ export function TabFilterPopover({ open, onOpenChange, children }: TabFilterPopo
   };
 
   return (
-    <Popover open={open} onOpenChange={onOpenChange}>
+    <Popover open={open} onOpenChange={handleOpenChange}>
       <PopoverAnchor asChild>{children}</PopoverAnchor>
       <PopoverContent
         align="end"

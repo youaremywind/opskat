@@ -1,0 +1,512 @@
+package ai
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+
+	"github.com/opskat/opskat/internal/ai/audit"
+	"github.com/opskat/opskat/internal/ai/helper"
+	"github.com/opskat/opskat/internal/ai/permission"
+	"github.com/opskat/opskat/internal/ai/tool"
+	"github.com/opskat/opskat/internal/model/entity/asset_entity"
+)
+
+func TestKafkaToolCommandMapping(t *testing.T) {
+	cmd, err := helper.KafkaClusterCommand("overview")
+	require.NoError(t, err)
+	assert.Equal(t, "cluster.read *", cmd)
+
+	cmd, err = helper.KafkaClusterCommand("brokers")
+	require.NoError(t, err)
+	assert.Equal(t, "broker.read *", cmd)
+
+	cmd, err = helper.KafkaTopicCommand("list", "")
+	require.NoError(t, err)
+	assert.Equal(t, "topic.list *", cmd)
+
+	cmd, err = helper.KafkaTopicCommand("get", "orders")
+	require.NoError(t, err)
+	assert.Equal(t, "topic.read orders", cmd)
+
+	cmd, err = helper.KafkaTopicCommand("create", "orders")
+	require.NoError(t, err)
+	assert.Equal(t, "topic.create orders", cmd)
+
+	cmd, err = helper.KafkaTopicCommand("delete", "orders")
+	require.NoError(t, err)
+	assert.Equal(t, "topic.delete orders", cmd)
+
+	cmd, err = helper.KafkaTopicCommand("update_config", "orders")
+	require.NoError(t, err)
+	assert.Equal(t, "topic.config.write orders", cmd)
+
+	cmd, err = helper.KafkaTopicCommand("increase_partitions", "orders")
+	require.NoError(t, err)
+	assert.Equal(t, "topic.partitions.write orders", cmd)
+
+	cmd, err = helper.KafkaTopicCommand("delete_records", "orders")
+	require.NoError(t, err)
+	assert.Equal(t, "topic.records.delete orders", cmd)
+
+	cmd, err = helper.KafkaConsumerGroupCommand("get", "billing-worker")
+	require.NoError(t, err)
+	assert.Equal(t, "consumer_group.read billing-worker", cmd)
+
+	cmd, err = helper.KafkaConsumerGroupCommand("reset_offset", "billing-worker")
+	require.NoError(t, err)
+	assert.Equal(t, "consumer_group.offset.write billing-worker", cmd)
+
+	cmd, err = helper.KafkaConsumerGroupCommand("delete", "billing-worker")
+	require.NoError(t, err)
+	assert.Equal(t, "consumer_group.delete billing-worker", cmd)
+
+	cmd, err = helper.KafkaACLCommand("list")
+	require.NoError(t, err)
+	assert.Equal(t, "acl.read *", cmd)
+
+	cmd, err = helper.KafkaACLCommand("create")
+	require.NoError(t, err)
+	assert.Equal(t, "acl.write *", cmd)
+
+	cmd, err = helper.KafkaACLCommand("delete")
+	require.NoError(t, err)
+	assert.Equal(t, "acl.write *", cmd)
+
+	cmd, err = helper.KafkaSchemaCommand("list_subjects", "")
+	require.NoError(t, err)
+	assert.Equal(t, "schema.read *", cmd)
+
+	cmd, err = helper.KafkaSchemaCommand("get", "orders-value")
+	require.NoError(t, err)
+	assert.Equal(t, "schema.read orders-value", cmd)
+
+	cmd, err = helper.KafkaSchemaCommand("check_compatibility", "orders-value")
+	require.NoError(t, err)
+	assert.Equal(t, "schema.read orders-value", cmd)
+
+	cmd, err = helper.KafkaSchemaCommand("register", "orders-value")
+	require.NoError(t, err)
+	assert.Equal(t, "schema.write orders-value", cmd)
+
+	cmd, err = helper.KafkaSchemaCommand("delete", "orders-value")
+	require.NoError(t, err)
+	assert.Equal(t, "schema.delete orders-value", cmd)
+
+	cmd, err = helper.KafkaConnectCommand("list_connectors", "")
+	require.NoError(t, err)
+	assert.Equal(t, "connect.read *", cmd)
+
+	cmd, err = helper.KafkaConnectCommand("get_connector", "sink-orders")
+	require.NoError(t, err)
+	assert.Equal(t, "connect.read sink-orders", cmd)
+
+	cmd, err = helper.KafkaConnectCommand("create", "sink-orders")
+	require.NoError(t, err)
+	assert.Equal(t, "connect.write sink-orders", cmd)
+
+	cmd, err = helper.KafkaConnectCommand("pause", "sink-orders")
+	require.NoError(t, err)
+	assert.Equal(t, "connect.state.write sink-orders", cmd)
+
+	cmd, err = helper.KafkaConnectCommand("delete", "sink-orders")
+	require.NoError(t, err)
+	assert.Equal(t, "connect.delete sink-orders", cmd)
+
+	cmd, err = helper.KafkaMessageCommand("browse", "orders")
+	require.NoError(t, err)
+	assert.Equal(t, "message.read orders", cmd)
+
+	cmd, err = helper.KafkaMessageCommand("inspect", "orders")
+	require.NoError(t, err)
+	assert.Equal(t, "message.read orders", cmd)
+
+	cmd, err = helper.KafkaMessageCommand("produce", "orders")
+	require.NoError(t, err)
+	assert.Equal(t, "message.write orders", cmd)
+
+	_, err = helper.KafkaTopicCommand("get", "")
+	assert.Error(t, err)
+
+	_, err = helper.KafkaMessageCommand("browse", "")
+	assert.Error(t, err)
+
+	_, err = helper.KafkaMessageCommand("delete", "orders")
+	assert.Error(t, err)
+
+	_, err = helper.KafkaACLCommand("grant")
+	assert.Error(t, err)
+
+	_, err = helper.KafkaSchemaCommand("get", "")
+	assert.Error(t, err)
+
+	_, err = helper.KafkaConnectCommand("get_connector", "")
+	assert.Error(t, err)
+}
+
+func TestAllToolDefsContainsGroupedKafkaTools(t *testing.T) {
+	tools := map[string]tool.ToolDef{}
+	for _, def := range tool.AllToolDefs() {
+		tools[def.Name] = def
+	}
+
+	assert.Contains(t, tools, "kafka_cluster")
+	assert.Contains(t, tools, "kafka_topic")
+	assert.Contains(t, tools, "kafka_consumer_group")
+	assert.Contains(t, tools, "kafka_acl")
+	assert.Contains(t, tools, "kafka_schema")
+	assert.Contains(t, tools, "kafka_connect")
+	assert.Contains(t, tools, "kafka_message")
+	assert.NotContains(t, tools, "kafka_topic_delete")
+
+	// 直接走 audit.ExtractCommandForAudit 验证命令摘要语义。
+	assert.Equal(t, "message.write orders", audit.ExtractCommandForAudit("kafka_message", map[string]any{
+		"operation": "produce",
+		"topic":     "orders",
+	}))
+	assert.Equal(t, "topic.records.delete orders", audit.ExtractCommandForAudit("kafka_topic", map[string]any{
+		"operation": "delete_records",
+		"topic":     "orders",
+	}))
+	assert.Equal(t, "consumer_group.offset.write billing-worker", audit.ExtractCommandForAudit("kafka_consumer_group", map[string]any{
+		"operation": "reset_offset",
+		"group":     "billing-worker",
+	}))
+	assert.Equal(t, "acl.write *", audit.ExtractCommandForAudit("kafka_acl", map[string]any{
+		"operation": "create",
+	}))
+	assert.Equal(t, "schema.write orders-value", audit.ExtractCommandForAudit("kafka_schema", map[string]any{
+		"operation": "register",
+		"subject":   "orders-value",
+	}))
+	assert.Equal(t, "connect.state.write sink-orders", audit.ExtractCommandForAudit("kafka_connect", map[string]any{
+		"operation": "restart",
+		"connector": "sink-orders",
+	}))
+}
+
+func TestKafkaMessageArgs(t *testing.T) {
+	partition, err := helper.ArgOptionalPartition(map[string]any{"partition": float64(2)})
+	require.NoError(t, err)
+	require.NotNil(t, partition)
+	assert.Equal(t, int32(2), *partition)
+
+	headers, err := helper.KafkaProduceHeadersFromArgs(map[string]any{
+		"headers": `[{"key":"trace","value":"abc","encoding":"text"}]`,
+	})
+	require.NoError(t, err)
+	require.Len(t, headers, 1)
+	assert.Equal(t, "trace", headers[0].Key)
+
+	_, err = helper.KafkaProduceHeadersFromArgs(map[string]any{"headers": `{"key":"trace"}`})
+	assert.Error(t, err)
+}
+
+func TestKafkaTopicAdminArgs(t *testing.T) {
+	createReq, err := helper.KafkaCreateTopicRequestFromArgs(7, map[string]any{
+		"topic":              "orders",
+		"partitions":         float64(3),
+		"replication_factor": float64(1),
+		"configs":            `{"cleanup.policy":"compact"}`,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int64(7), createReq.AssetID)
+	assert.Equal(t, int32(3), createReq.Partitions)
+	assert.Equal(t, int16(1), createReq.ReplicationFactor)
+	assert.Equal(t, "compact", createReq.Configs["cleanup.policy"])
+
+	updateReq, err := helper.KafkaAlterTopicConfigRequestFromArgs(7, map[string]any{
+		"topic":          "orders",
+		"config_updates": `[{"name":"retention.ms","value":"60000","op":"set"}]`,
+	})
+	require.NoError(t, err)
+	require.Len(t, updateReq.Configs, 1)
+	assert.Equal(t, "retention.ms", updateReq.Configs[0].Name)
+
+	recordsReq, err := helper.KafkaDeleteRecordsRequestFromArgs(7, map[string]any{
+		"topic":   "orders",
+		"records": `[{"partition":0,"offset":123}]`,
+	})
+	require.NoError(t, err)
+	require.Len(t, recordsReq.Partitions, 1)
+	assert.Equal(t, int32(0), recordsReq.Partitions[0].Partition)
+	assert.Equal(t, int64(123), recordsReq.Partitions[0].Offset)
+
+	_, err = helper.KafkaStringMapFromJSON(`[{"bad":true}]`)
+	assert.Error(t, err)
+
+	_, err = helper.KafkaAlterTopicConfigRequestFromArgs(7, map[string]any{"topic": "orders"})
+	assert.Error(t, err)
+
+	_, err = helper.KafkaDeleteRecordsRequestFromArgs(7, map[string]any{"topic": "orders", "records": `{"partition":0}`})
+	assert.Error(t, err)
+}
+
+func TestKafkaConsumerGroupAdminArgs(t *testing.T) {
+	req, err := helper.KafkaResetConsumerGroupOffsetRequestFromArgs(7, map[string]any{
+		"group":      "billing",
+		"topic":      "orders",
+		"mode":       "offset",
+		"offset":     float64(123),
+		"partitions": `[0,1]`,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int64(7), req.AssetID)
+	assert.Equal(t, "billing", req.Group)
+	assert.Equal(t, "orders", req.Topic)
+	assert.Equal(t, int64(123), req.Offset)
+	assert.Equal(t, []int32{0, 1}, req.Partitions)
+
+	partitions, err := helper.KafkaInt32SliceFromJSON(`[2,3]`)
+	require.NoError(t, err)
+	assert.Equal(t, []int32{2, 3}, partitions)
+
+	_, err = helper.KafkaInt32SliceFromJSON(`{"bad":true}`)
+	assert.Error(t, err)
+}
+
+func TestKafkaACLArgs(t *testing.T) {
+	listReq := helper.KafkaListACLsRequestFromArgs(7, map[string]any{
+		"resource_type": "topic",
+		"resource_name": "orders",
+		"pattern_type":  "match",
+		"principal":     "User:alice",
+		"host":          "*",
+		"acl_operation": "read",
+		"permission":    "allow",
+		"page":          float64(2),
+		"page_size":     float64(10),
+	})
+	assert.Equal(t, int64(7), listReq.AssetID)
+	assert.Equal(t, "topic", listReq.ResourceType)
+	assert.Equal(t, "orders", listReq.ResourceName)
+	assert.Equal(t, "read", listReq.Operation)
+	assert.Equal(t, 2, listReq.Page)
+	assert.Equal(t, 10, listReq.PageSize)
+
+	createReq := helper.KafkaCreateACLRequestFromArgs(7, map[string]any{
+		"resource_type": "group",
+		"resource_name": "billing",
+		"principal":     "User:alice",
+		"host":          "*",
+		"acl_operation": "read",
+		"permission":    "deny",
+	})
+	assert.Equal(t, "group", createReq.ResourceType)
+	assert.Equal(t, "deny", createReq.Permission)
+
+	deleteReq := helper.KafkaDeleteACLRequestFromArgs(7, map[string]any{
+		"resource_type": "cluster",
+		"principal":     "User:admin",
+		"host":          "*",
+		"acl_operation": "describe",
+		"permission":    "allow",
+	})
+	assert.Equal(t, "cluster", deleteReq.ResourceType)
+	assert.Equal(t, "describe", deleteReq.Operation)
+}
+
+func TestKafkaSchemaArgs(t *testing.T) {
+	registerReq, err := helper.KafkaRegisterSchemaRequestFromArgs(7, map[string]any{
+		"subject":     "orders-value",
+		"schema":      `{"type":"record","name":"Order","fields":[]}`,
+		"schema_type": "AVRO",
+		"references":  `[{"name":"Common","subject":"common-value","version":1}]`,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int64(7), registerReq.AssetID)
+	assert.Equal(t, "orders-value", registerReq.Subject)
+	assert.Equal(t, "AVRO", registerReq.SchemaType)
+	require.Len(t, registerReq.References, 1)
+	assert.Equal(t, "common-value", registerReq.References[0].Subject)
+
+	checkReq, err := helper.KafkaCheckSchemaCompatibilityRequestFromArgs(7, map[string]any{
+		"subject": "orders-value",
+		"version": "latest",
+		"schema":  `{"type":"record","name":"Order","fields":[]}`,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "latest", checkReq.Version)
+
+	deleteReq := helper.KafkaDeleteSchemaRequestFromArgs(7, map[string]any{
+		"subject":   "orders-value",
+		"version":   "2",
+		"permanent": "true",
+	})
+	assert.True(t, deleteReq.Permanent)
+	assert.Equal(t, "2", deleteReq.Version)
+
+	_, err = helper.KafkaSchemaReferencesFromJSON(`{"bad":true}`)
+	assert.Error(t, err)
+}
+
+func TestKafkaConnectArgs(t *testing.T) {
+	configReq, err := helper.KafkaConnectorConfigRequestFromArgs(7, map[string]any{
+		"cluster":   "local",
+		"connector": "sink-orders",
+		"config":    `{"connector.class":"FileStreamSink"}`,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int64(7), configReq.AssetID)
+	assert.Equal(t, "local", configReq.Cluster)
+	assert.Equal(t, "sink-orders", configReq.Name)
+	assert.Equal(t, "FileStreamSink", configReq.Config["connector.class"])
+
+	restartReq := helper.KafkaRestartConnectorRequestFromArgs(7, map[string]any{
+		"cluster":       "local",
+		"connector":     "sink-orders",
+		"include_tasks": "true",
+		"only_failed":   "true",
+	})
+	assert.True(t, restartReq.IncludeTasks)
+	assert.True(t, restartReq.OnlyFailed)
+
+	_, err = helper.KafkaConnectorConfigRequestFromArgs(7, map[string]any{"config": `[]`})
+	assert.Error(t, err)
+}
+
+func TestKafkaMessagePermissionStopsBeforeConnection(t *testing.T) {
+	ctx, mockAsset, _ := setupPolicyTest(t)
+	asset := &asset_entity.Asset{
+		ID:   1,
+		Name: "kafka-prod",
+		Type: asset_entity.AssetTypeKafka,
+		CmdPolicy: mustJSON(asset_entity.KafkaPolicy{
+			DenyList: []string{"message.write *"},
+		}),
+	}
+	mockAsset.EXPECT().Find(gomock.Any(), int64(1)).Return(asset, nil).AnyTimes()
+
+	ctx = permission.WithPolicyChecker(ctx, permission.NewCommandPolicyChecker(nil))
+	result, err := helper.HandleKafkaMessage(ctx, map[string]any{
+		"asset_id":  float64(1),
+		"operation": "produce",
+		"topic":     "orders",
+		"value":     "hello",
+	})
+	require.NoError(t, err)
+	assert.Contains(t, result, "Kafka")
+}
+
+func TestKafkaACLPermissionStopsBeforeConnection(t *testing.T) {
+	ctx, mockAsset, _ := setupPolicyTest(t)
+	asset := &asset_entity.Asset{
+		ID:   1,
+		Name: "kafka-prod",
+		Type: asset_entity.AssetTypeKafka,
+		CmdPolicy: mustJSON(asset_entity.KafkaPolicy{
+			DenyList: []string{"acl.write *"},
+		}),
+	}
+	mockAsset.EXPECT().Find(gomock.Any(), int64(1)).Return(asset, nil).AnyTimes()
+
+	ctx = permission.WithPolicyChecker(ctx, permission.NewCommandPolicyChecker(nil))
+	result, err := helper.HandleKafkaACL(ctx, map[string]any{
+		"asset_id":      float64(1),
+		"operation":     "create",
+		"resource_type": "topic",
+		"resource_name": "orders",
+		"principal":     "User:alice",
+		"host":          "*",
+		"acl_operation": "read",
+		"permission":    "allow",
+	})
+	require.NoError(t, err)
+	assert.Contains(t, result, "Kafka")
+}
+
+func TestKafkaSchemaPermissionStopsBeforeConnection(t *testing.T) {
+	ctx, mockAsset, _ := setupPolicyTest(t)
+	asset := &asset_entity.Asset{
+		ID:   1,
+		Name: "kafka-prod",
+		Type: asset_entity.AssetTypeKafka,
+		CmdPolicy: mustJSON(asset_entity.KafkaPolicy{
+			DenyList: []string{"schema.write *"},
+		}),
+	}
+	mockAsset.EXPECT().Find(gomock.Any(), int64(1)).Return(asset, nil).AnyTimes()
+
+	ctx = permission.WithPolicyChecker(ctx, permission.NewCommandPolicyChecker(nil))
+	result, err := helper.HandleKafkaSchema(ctx, map[string]any{
+		"asset_id":      float64(1),
+		"operation":     "register",
+		"subject":       "orders-value",
+		"schema":        `{"type":"record","name":"Order","fields":[]}`,
+		"schema_type":   "AVRO",
+		"compatibility": "FULL",
+	})
+	require.NoError(t, err)
+	assert.Contains(t, result, "Kafka")
+}
+
+func TestKafkaConnectPermissionStopsBeforeConnection(t *testing.T) {
+	ctx, mockAsset, _ := setupPolicyTest(t)
+	asset := &asset_entity.Asset{
+		ID:   1,
+		Name: "kafka-prod",
+		Type: asset_entity.AssetTypeKafka,
+		CmdPolicy: mustJSON(asset_entity.KafkaPolicy{
+			DenyList: []string{"connect.state.write *"},
+		}),
+	}
+	mockAsset.EXPECT().Find(gomock.Any(), int64(1)).Return(asset, nil).AnyTimes()
+
+	ctx = permission.WithPolicyChecker(ctx, permission.NewCommandPolicyChecker(nil))
+	result, err := helper.HandleKafkaConnect(ctx, map[string]any{
+		"asset_id":  float64(1),
+		"operation": "restart",
+		"cluster":   "local",
+		"connector": "sink-orders",
+	})
+	require.NoError(t, err)
+	assert.Contains(t, result, "Kafka")
+}
+
+func TestKafkaTopicAdminPermissionStopsBeforeConnection(t *testing.T) {
+	ctx, mockAsset, _ := setupPolicyTest(t)
+	asset := &asset_entity.Asset{
+		ID:   1,
+		Name: "kafka-prod",
+		Type: asset_entity.AssetTypeKafka,
+		CmdPolicy: mustJSON(asset_entity.KafkaPolicy{
+			DenyList: []string{"topic.delete *"},
+		}),
+	}
+	mockAsset.EXPECT().Find(gomock.Any(), int64(1)).Return(asset, nil).AnyTimes()
+
+	ctx = permission.WithPolicyChecker(ctx, permission.NewCommandPolicyChecker(nil))
+	result, err := helper.HandleKafkaTopic(ctx, map[string]any{
+		"asset_id":  float64(1),
+		"operation": "delete",
+		"topic":     "orders",
+	})
+	require.NoError(t, err)
+	assert.Contains(t, result, "Kafka")
+}
+
+func TestKafkaConsumerGroupAdminPermissionStopsBeforeConnection(t *testing.T) {
+	ctx, mockAsset, _ := setupPolicyTest(t)
+	asset := &asset_entity.Asset{
+		ID:   1,
+		Name: "kafka-prod",
+		Type: asset_entity.AssetTypeKafka,
+		CmdPolicy: mustJSON(asset_entity.KafkaPolicy{
+			DenyList: []string{"consumer_group.offset.write *"},
+		}),
+	}
+	mockAsset.EXPECT().Find(gomock.Any(), int64(1)).Return(asset, nil).AnyTimes()
+
+	ctx = permission.WithPolicyChecker(ctx, permission.NewCommandPolicyChecker(nil))
+	result, err := helper.HandleKafkaConsumerGroup(ctx, map[string]any{
+		"asset_id":  float64(1),
+		"operation": "reset_offset",
+		"group":     "billing",
+		"topic":     "orders",
+		"mode":      "latest",
+	})
+	require.NoError(t, err)
+	assert.Contains(t, result, "Kafka")
+}

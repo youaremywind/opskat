@@ -1,7 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { ConnectSSHAsync } from "../../wailsjs/go/app/App";
+import { TooltipProvider } from "@opskat/ui";
+import { ConnectSSHAsync } from "../../wailsjs/go/ssh/SSH";
+import { ListAssets, ListGroups } from "../../wailsjs/go/system/System";
+import { AssetTree } from "@/components/layout/AssetTree";
 import { useAssetStore } from "../stores/assetStore";
 import { useTabStore } from "../stores/tabStore";
 import { useTerminalStore } from "../stores/terminalStore";
@@ -355,7 +358,10 @@ describe("AssetTree double-click → connection flow", () => {
         "session-abc": {
           splitTree: { type: "terminal", sessionId: "session-abc" },
           activePaneId: "session-abc",
-          panes: { "session-abc": { sessionId: "session-abc", connected: true, connectedAt: Date.now() } },
+          panes: {
+            "session-abc": { sessionId: "session-abc", transport: "ssh", connected: true, connectedAt: Date.now() },
+          },
+          directoryFollowMode: "off",
         },
       },
     });
@@ -385,5 +391,53 @@ describe("AssetTree double-click → connection flow", () => {
 
     expect(ConnectSSHAsync).not.toHaveBeenCalled();
     expect(useTabStore.getState().tabs).toHaveLength(0);
+  });
+});
+
+describe("AssetTree ungrouped virtual folder", () => {
+  const renderAssetTree = () =>
+    render(
+      <TooltipProvider>
+        <AssetTree
+          collapsed={false}
+          onAddAsset={() => {}}
+          onAddGroup={() => {}}
+          onEditGroup={() => {}}
+          onGroupDetail={() => {}}
+          onEditAsset={() => {}}
+          onCopyAsset={() => {}}
+          onConnectAsset={() => {}}
+          onSelectAsset={() => {}}
+        />
+      </TooltipProvider>
+    );
+
+  beforeEach(() => {
+    localStorage.clear();
+    useAssetStore.setState({
+      assets: [],
+      groups: [],
+      selectedAssetId: null,
+      selectedGroupId: null,
+      collapsedGroupIds: [0],
+      loading: false,
+      initialized: false,
+    });
+    useTerminalStore.setState({ tabData: {}, connections: {}, connectingAssetIds: new Set() });
+    useTabStore.setState({ tabs: [], activeTabId: null });
+    vi.mocked(ListAssets).mockResolvedValue([makeAsset(1, "ssh", "Ungrouped Server")]);
+    vi.mocked(ListGroups).mockResolvedValue([]);
+  });
+
+  it("renders ungrouped assets after expanding the virtual folder", async () => {
+    const user = userEvent.setup();
+    renderAssetTree();
+
+    expect(await screen.findByText("asset.ungrouped")).toBeTruthy();
+    expect(screen.queryByText("Ungrouped Server")).toBeNull();
+
+    await user.click(screen.getByText("asset.ungrouped"));
+
+    expect(screen.getByText("Ungrouped Server")).toBeTruthy();
   });
 });
