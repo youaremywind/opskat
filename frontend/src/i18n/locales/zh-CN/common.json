@@ -1213,6 +1213,7 @@
     "loadError": "加载失败",
     "retry": "重试",
     "refresh": "刷新",
+    "newFolder": "新建文件夹",
     "openFolder": "打开",
     "dropToUpload": "拖放文件到此处上传",
     "transfers": "传输记录",

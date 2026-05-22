@@ -1228,6 +1228,7 @@
     "loadError": "Failed to load",
     "retry": "Retry",
     "refresh": "Refresh",
+    "newFolder": "New Folder",
     "openFolder": "Open",
     "dropToUpload": "Drop files here to upload",
     "transfers": "Transfers",
