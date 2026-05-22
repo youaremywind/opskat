@@ -88,12 +88,17 @@ type Session struct {
 
 	syncEnableMu       sync.Mutex
 	syncMu             sync.Mutex
+	outputFilterMu     sync.Mutex
 	syncState          DirectorySyncState
 	pendingDirChange   chan error
 	pendingDirNonce    string
 	pendingDirTarget   string
 	pendingDirExpected string
 	parserRemainder    []byte
+	echoSuppressions   [][]byte
+	echoSuppressionIdx int
+	internalScriptEcho bool
+	internalEchoDropLn bool
 	syncToken          string
 	promptNonce        string
 	promptPendingNonce string
@@ -101,6 +106,7 @@ type Session struct {
 	syncDirty          bool
 	syncBootstrapCh    chan struct{} // closed when EnableSync receives init:pid; nil when not bootstrapping
 	syncProbeActive    bool
+	internalScriptSeq  int
 	probeShellStateFn  func(int) (shellProbeResult, error)
 }
 
@@ -162,12 +168,49 @@ func (s *Session) IsClosed() bool {
 }
 
 func (s *Session) writeInternal(data []byte) error {
+	pattern := s.queueInternalEchoSuppression(data)
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
+		s.removeQueuedEchoSuppression(pattern)
 		return fmt.Errorf("session is closed")
 	}
-	_, err := s.stdin.Write(data)
+	n, err := s.stdin.Write(data)
+	if err != nil && n == 0 {
+		s.removeQueuedEchoSuppression(pattern)
+	}
+	return err
+}
+
+func (s *Session) nextInternalScriptPath() string {
+	s.syncMu.Lock()
+	defer s.syncMu.Unlock()
+	s.internalScriptSeq++
+	return fmt.Sprintf("/tmp/.opskat-sync-%d-%d.sh", time.Now().UnixNano(), s.internalScriptSeq)
+}
+
+func (s *Session) writeInternalScript(script string) error {
+	if script == "" {
+		return fmt.Errorf("internal script is empty")
+	}
+	return s.writeInternalTempScript(s.nextInternalScriptPath(), script)
+}
+
+func (s *Session) writeInternalTempScript(tempPath string, script string) error {
+	command := buildSourceTempScriptCommand(tempPath, script)
+	s.beginInternalScriptEchoSuppression()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		s.endInternalScriptEchoSuppression()
+		return fmt.Errorf("session is closed")
+	}
+	n, err := s.stdin.Write([]byte(command))
+	if err != nil && n == 0 {
+		s.endInternalScriptEchoSuppression()
+	}
 	return err
 }
 
