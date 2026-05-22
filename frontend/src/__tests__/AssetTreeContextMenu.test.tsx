@@ -62,8 +62,8 @@ describe("AssetTree context menu", () => {
 
     fireEvent.contextMenu(screen.getByText("Folder B"));
 
-    expect(await screen.findByText("asset.renameGroup")).toBeInTheDocument();
-    expect(screen.getByText("asset.editGroupSettings")).toBeInTheDocument();
+    expect(await screen.findByText("asset.editGroupSettings")).toBeInTheDocument();
+    expect(screen.queryByText("asset.renameGroup")).not.toBeInTheDocument();
     expect(screen.getAllByRole("menu")).toHaveLength(1);
   });
 
@@ -112,9 +112,8 @@ describe("AssetTree context menu", () => {
     fireEvent.contextMenu(screen.getByText("asset.ungrouped"));
     const menu = await screen.findByRole("menu");
 
-    expect(menu).toHaveTextContent("asset.renameGroup");
     expect(menu).toHaveTextContent("asset.editGroupSettings");
-    expect(within(menu).getByText("asset.renameGroup").closest('[role="menuitem"]')).toHaveAttribute(
+    expect(within(menu).getByText("asset.editGroupSettings").closest('[role="menuitem"]')).toHaveAttribute(
       "data-disabled",
       "true"
     );
@@ -147,8 +146,8 @@ describe("AssetTree context menu", () => {
     fireEvent.contextMenu(screen.getByText("Folder A"));
     const menu = await screen.findByRole("menu");
 
-    expect(menu).toHaveTextContent("asset.renameGroup");
     expect(menu).toHaveTextContent("asset.editGroupSettings");
+    expect(menu).not.toHaveTextContent("asset.renameGroup");
     expect(menu).not.toHaveTextContent("asset.groupDetail");
     expect(menu).not.toHaveTextContent("action.openInTab");
   });

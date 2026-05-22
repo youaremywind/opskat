@@ -9,7 +9,6 @@ import {
   FolderPlus,
   Search,
   Loader2,
-  Check,
   Eye,
   ArrowUp,
   ArrowDown,
@@ -25,7 +24,6 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import {
   Button,
-  Input,
   ScrollArea,
   AlertDialog,
   AlertDialogContent,
@@ -63,7 +61,6 @@ import { useExtensionStore } from "@/extension";
 import { useActiveAssetIds } from "@/hooks/useActiveAssetIds";
 import { MoveAsset } from "../../../wailsjs/go/system/System";
 import { MoveGroup, ReorderAsset, ReorderGroup } from "../../../wailsjs/go/system/System";
-import { RenameGroup } from "../../../wailsjs/go/system/System";
 import { asset_entity, group_entity } from "../../../wailsjs/go/models";
 import {
   DndContext,
@@ -176,7 +173,6 @@ export function AssetTree({
     childGroupCount: number;
   } | null>(null);
   const [deleteAssetConfirm, setDeleteAssetConfirm] = useState<asset_entity.Asset | null>(null);
-  const [renamingGroup, setRenamingGroup] = useState<group_entity.Group | null>(null);
   const [groupContextMenu, setGroupContextMenu] = useState<{
     group: group_entity.Group;
     position: { x: number; y: number };
@@ -399,18 +395,6 @@ export function AssetTree({
     }
   };
 
-  const handleRenameGroup = async (group: group_entity.Group, name: string) => {
-    const nextName = name.trim();
-    if (!nextName || nextName === group.Name) return;
-    try {
-      await RenameGroup(group.ID, nextName);
-      await fetchGroups();
-      setRenamingGroup(null);
-    } catch (e) {
-      toast.error(String(e));
-    }
-  };
-
   const handleConfirmDelete = async (deleteAssets: boolean) => {
     if (!deleteConfirm) return;
     try {
@@ -434,7 +418,6 @@ export function AssetTree({
       group={group}
       t={t}
       onAddAsset={onAddAsset}
-      onRenameGroup={setRenamingGroup}
       onEditGroup={onEditGroup}
       onMoveGroup={handleMoveGroup}
       onDeleteGroup={handleDeleteGroup}
@@ -688,12 +671,6 @@ export function AssetTree({
           setDeleteAssetConfirm(null);
         }}
       />
-      <RenameGroupDialog
-        group={renamingGroup}
-        onOpenChange={(open) => !open && setRenamingGroup(null)}
-        onConfirm={handleRenameGroup}
-        t={t}
-      />
     </div>
   );
 }
@@ -702,7 +679,6 @@ function GroupContextMenuContent({
   group,
   t,
   onAddAsset,
-  onRenameGroup,
   onEditGroup,
   onMoveGroup,
   onDeleteGroup,
@@ -711,7 +687,6 @@ function GroupContextMenuContent({
   group: group_entity.Group;
   t: (key: string) => string;
   onAddAsset: (groupId: number) => void;
-  onRenameGroup: (group: group_entity.Group) => void;
   onEditGroup: (group: group_entity.Group) => void;
   onMoveGroup: (id: number, direction: string) => void;
   onDeleteGroup: (id: number) => void;
@@ -730,10 +705,6 @@ function GroupContextMenuContent({
         {t("asset.addAsset")}
       </ContextMenuItem>
       <ContextMenuSeparator />
-      <ContextMenuItem disabled={isUngrouped} onClick={() => run(() => onRenameGroup(group))}>
-        <Pencil className="h-3.5 w-3.5 mr-1.5" />
-        {t("asset.renameGroup")}
-      </ContextMenuItem>
       <ContextMenuItem disabled={isUngrouped} onClick={() => run(() => onEditGroup(group))}>
         <Settings2 className="h-3.5 w-3.5 mr-1.5" />
         {t("asset.editGroupSettings")}
@@ -761,65 +732,6 @@ function GroupContextMenuContent({
         {t("action.delete")}
       </ContextMenuItem>
     </>
-  );
-}
-
-function RenameGroupDialog({
-  group,
-  onOpenChange,
-  onConfirm,
-  t,
-}: {
-  group: group_entity.Group | null;
-  onOpenChange: (open: boolean) => void;
-  onConfirm: (group: group_entity.Group, name: string) => Promise<void>;
-  t: (key: string) => string;
-}) {
-  const [name, setName] = useState("");
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    if (group) setName(group.Name);
-  }, [group]);
-
-  const submit = async () => {
-    if (!group || !name.trim() || saving) return;
-    setSaving(true);
-    try {
-      await onConfirm(group, name);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <AlertDialog open={!!group} onOpenChange={onOpenChange}>
-      <AlertDialogContent onOverlayClick={() => onOpenChange(false)}>
-        <AlertDialogHeader>
-          <AlertDialogTitle>{t("asset.renameGroup")}</AlertDialogTitle>
-          <AlertDialogDescription>{t("asset.renameGroupDesc")}</AlertDialogDescription>
-        </AlertDialogHeader>
-        <Input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") void submit();
-          }}
-          autoFocus
-        />
-        <AlertDialogFooter>
-          <AlertDialogCancel disabled={saving}>{t("action.cancel")}</AlertDialogCancel>
-          <AlertDialogAction onClick={submit} disabled={saving || !name.trim()}>
-            {saving ? (
-              <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
-            ) : (
-              <Check className="h-3.5 w-3.5 mr-1.5" />
-            )}
-            {t("action.save")}
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
   );
 }
 
