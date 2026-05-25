@@ -183,12 +183,14 @@ function DropIndicator() {
   if (y === null) return null;
   return (
     <div
-      className="pointer-events-none fixed left-0 right-0 z-50 h-0.5 bg-primary"
+      className="pointer-events-none absolute right-2 z-20 h-px bg-primary transition-[top,left] duration-100 ease-out"
       style={{
-        top: y - 1,
-        marginLeft: depth ? `${20 + depth * 12}px` : "20px",
+        top: y - 0.5,
+        left: `${20 + (depth ?? 0) * 12}px`,
       }}
-    />
+    >
+      <span className="absolute -left-1 top-1/2 h-2 w-2 -translate-y-1/2 rounded-full bg-primary" />
+    </div>
   );
 }
 
@@ -342,6 +344,7 @@ export function AssetTree({
   const hoverExpandTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hoverExpandTargetRef = useRef<number | null>(null);
   const rowsRef = useRef<Row[]>([]);
+  const treeContainerRef = useRef<HTMLDivElement>(null);
 
   const rows = useMemo(
     () =>
@@ -359,7 +362,8 @@ export function AssetTree({
 
   const collectRowRects = useCallback((): Map<string, RowRect> => {
     const m = new Map<string, RowRect>();
-    const nodes = document.querySelectorAll<HTMLElement>("[data-asset-tree-row]");
+    const container = treeContainerRef.current ?? document;
+    const nodes = container.querySelectorAll<HTMLElement>("[data-asset-tree-row]");
     for (const node of nodes) {
       const key = node.getAttribute("data-asset-tree-row");
       if (!key) continue;
@@ -401,8 +405,15 @@ export function AssetTree({
       groups,
     });
 
-    const { y, depth } = projectIndicator(point, rowsRef.current, rects);
-    useAssetTreeDndStore.getState().setIndicator(point, y, depth);
+    const containerTop = treeContainerRef.current?.getBoundingClientRect().top ?? 0;
+    const isHighlight = point.kind === "into-group-first";
+    if (isHighlight) {
+      useAssetTreeDndStore.getState().setIndicator(point, null, null, point.groupID);
+    } else {
+      const { y, depth } = projectIndicator(point, rowsRef.current, rects);
+      const relY = y === null ? null : y - containerTop;
+      useAssetTreeDndStore.getState().setIndicator(point, relY, depth, null);
+    }
 
     // 折叠 group hover 500ms 自动展开
     const hoverGroupID = point.kind === "before-group" || point.kind === "into-group-first" ? point.groupID : null;
@@ -575,7 +586,7 @@ export function AssetTree({
           onDragCancel={handleDragCancel}
           onDragEnd={handleDragEnd}
         >
-          <div className="p-2 space-y-0.5 isolate relative">
+          <div ref={treeContainerRef} className="p-2 space-y-0.5 isolate relative">
             {visibleRootGroups.map((group) => (
               <GroupItem
                 key={group.ID}
@@ -874,6 +885,7 @@ function GroupItem({
   /* eslint-disable react-hooks/refs */
   const expanded = useAssetStore((s) => !s.collapsedGroupIds.includes(group.ID));
   const toggleGroupCollapsed = useAssetStore((s) => s.toggleGroupCollapsed);
+  const isDndHighlighted = useAssetTreeDndStore((s) => s.highlightedGroupID === group.ID);
   const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const children = group.ID > 0 ? childGroups(group.ID) : [];
   const totalCount = countAssetsInGroup(group.ID);
@@ -902,7 +914,9 @@ function GroupItem({
       // dnd-kit's setNodeRef is a callback, not a React ref.
       ref={sortable.setNodeRef}
       data-asset-tree-row={`group-${group.ID}`}
-      className="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium outline-none hover:bg-sidebar-accent focus-visible:ring-1 focus-visible:ring-sidebar-ring/60 cursor-pointer transition-colors duration-150"
+      className={`flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium outline-none focus-visible:ring-1 focus-visible:ring-sidebar-ring/60 cursor-pointer transition-colors duration-150 ${
+        isDndHighlighted ? "bg-primary/10 ring-1 ring-primary/40" : "hover:bg-sidebar-accent"
+      }`}
       style={groupRowStyle}
       onClick={() => toggleGroupCollapsed(group.ID)}
       onContextMenu={(e) => onGroupContextMenu(group, e)}
@@ -980,7 +994,11 @@ function GroupItem({
           {assets.length === 0 && children.length === 0 && (
             <div
               data-asset-tree-row={`empty-${group.ID}`}
-              className="pr-2 py-1 text-xs text-muted-foreground cursor-pointer hover:underline"
+              className={`pr-2 py-1 text-xs cursor-pointer rounded-md transition-colors duration-150 ${
+                isDndHighlighted
+                  ? "bg-primary/10 ring-1 ring-primary/40 text-foreground"
+                  : "text-muted-foreground hover:underline"
+              }`}
               style={{ paddingLeft: `${20 + (depth + 1) * 12}px` }}
               onClick={() => onAddAsset(group.ID)}
             >

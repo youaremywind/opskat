@@ -67,7 +67,9 @@ export function computeInsertionPoint({
   }
 
   if (hitIdx < 0) {
-    return { kind: "root-end" };
+    // pointer 超出最后一行：仅允许 group 落到 root 末尾；
+    // asset 不走 root-end，避免无意中拖出原 group → 落入未分组。
+    return active.kind === "group" ? { kind: "root-end" } : { kind: "invalid" };
   }
 
   const row = rows[hitIdx];

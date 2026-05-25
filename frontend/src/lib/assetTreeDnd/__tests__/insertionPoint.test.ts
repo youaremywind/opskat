@@ -56,9 +56,15 @@ describe("computeInsertionPoint - asset active", () => {
     ).toEqual({ kind: "into-group-first", groupID: 2, depth: 0 });
   });
 
-  it("pointer 超出树底部 → root-end", () => {
+  it("pointer 超出树底部（asset active）→ invalid（避免无意中落入未分组）", () => {
     expect(
       computeInsertionPoint({ rows, rowRects: rects, pointerY: 9999, active: { kind: "asset", id: 99 }, groups })
+    ).toEqual({ kind: "invalid" });
+  });
+
+  it("pointer 超出树底部（group active）→ root-end", () => {
+    expect(
+      computeInsertionPoint({ rows, rowRects: rects, pointerY: 9999, active: { kind: "group", id: 99 }, groups })
     ).toEqual({ kind: "root-end" });
   });
 
