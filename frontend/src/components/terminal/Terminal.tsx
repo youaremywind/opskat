@@ -9,7 +9,7 @@ import { useShortcutStore, formatBinding, formatModKey } from "@/stores/shortcut
 import { useTerminalStore } from "@/stores/terminalStore";
 import { useTerminalThemeStore, toXtermTheme } from "@/stores/terminalThemeStore";
 import { builtinThemes, defaultLightTheme, defaultDarkTheme } from "@/data/terminalThemes";
-import { withTerminalFontFallback } from "@/data/terminalFonts";
+import { withTerminalFontFallback, withTerminalFontIsolation } from "@/data/terminalFonts";
 import { useResolvedTheme } from "@/components/theme-provider";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -181,9 +181,12 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Termi
     if (!termRef.current) return;
     termRef.current.options.theme = xtermTheme;
     termRef.current.options.fontSize = fontSize;
-    termRef.current.options.fontFamily = withTerminalFontFallback(fontFamily);
+    // 加 session-unique sentinel 让每个 terminal 独占 atlas，避免清自己的 atlas
+    // 时污染其它 session（详见 terminalFonts.ts 的 withTerminalFontIsolation 注释）。
+    termRef.current.options.fontFamily = withTerminalFontIsolation(sessionId, withTerminalFontFallback(fontFamily));
     termRef.current.options.scrollback = scrollback;
     fitAddonRef.current?.fit();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [xtermTheme, fontSize, fontFamily, scrollback]);
 
   useEffect(() => {
