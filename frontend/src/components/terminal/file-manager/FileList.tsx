@@ -48,11 +48,13 @@ function RenameInput({ initialName, onCommit, onCancel }: RenameInputProps) {
 }
 
 interface FileListProps {
+  canExternalEdit?: (entry: sftp_svc.FileEntry) => boolean;
   clipboardCutPaths: Set<string>;
   currentPath: string;
   entries: sftp_svc.FileEntry[];
   error: string | null;
   loading: boolean;
+  onExternalOpen?: (path: string) => void;
   onGoUp: () => void;
   onMoveEntriesToDirectory: (sourcePaths: string[], targetDirPath: string) => void;
   onNavigate: (path: string) => void;
@@ -66,11 +68,13 @@ interface FileListProps {
 }
 
 export function FileList({
+  canExternalEdit,
   clipboardCutPaths,
   currentPath,
   entries,
   error,
   loading,
+  onExternalOpen,
   onGoUp,
   onMoveEntriesToDirectory,
   onNavigate,
@@ -355,7 +359,14 @@ export function FileList({
                     maybeStartSlowRename(fullPath, index, e.timeStamp);
                   }}
                   onDoubleClick={() => {
-                    if (entry.isDir && !isRenaming) onNavigate(fullPath);
+                    if (isRenaming) return;
+                    if (entry.isDir) {
+                      onNavigate(fullPath);
+                      return;
+                    }
+                    if (canExternalEdit?.(entry)) {
+                      onExternalOpen?.(fullPath);
+                    }
                   }}
                   onContextMenu={(e) => {
                     e.preventDefault();

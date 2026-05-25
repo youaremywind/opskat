@@ -12,6 +12,7 @@ import {
   FolderPlus,
   Info,
   KeyRound,
+  PencilLine,
   RefreshCw,
   Scissors,
   Terminal,
@@ -145,6 +146,12 @@ export function FloatingMenu({ canPaste, ctx, onAction, onClose }: FloatingMenuP
           </>
         ) : (
           <>
+            {ctx.canExternalEdit && (
+              <>
+                {item("externalEdit", <PencilLine />, t("externalEdit.actions.open"))}
+                {separator}
+              </>
+            )}
             {item("download", <Download />, t("sftp.menu.downloadFile"))}
             {separator}
             {item("cut", <Scissors />, t("sftp.menu.cut"))}

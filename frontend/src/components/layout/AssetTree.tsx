@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { useFullscreen } from "@/hooks/useFullscreen";
 import {
   ChevronRight,
   ChevronDown,
@@ -218,6 +219,7 @@ export function AssetTree({
   onOpenInfoTab,
 }: AssetTreeProps) {
   const { t } = useTranslation();
+  const isFullscreen = useFullscreen();
   const {
     assets,
     groups,
@@ -511,7 +513,12 @@ export function AssetTree({
 
   return (
     <div className="flex h-full w-full flex-col border-r border-panel-divider bg-sidebar">
-      <div className="flex flex-col gap-1.5 px-3 pt-2 pb-2 border-b border-panel-divider">
+      {/* Drag region for frameless window */}
+      <div
+        className={`${isFullscreen ? "h-0" : "h-8"} w-full shrink-0`}
+        style={{ "--wails-draggable": "drag" } as React.CSSProperties}
+      />
+      <div className="flex flex-col gap-1.5 px-3 pb-2 border-b border-panel-divider">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-1">
             {sidebarHidden && (
