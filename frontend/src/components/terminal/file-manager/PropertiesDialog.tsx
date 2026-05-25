@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { File, Folder, Info } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@opskat/ui";
 import { SFTPProperties } from "../../../../wailsjs/go/ssh/SSH";
@@ -13,6 +14,7 @@ interface PropertiesDialogProps {
 }
 
 export function PropertiesDialog({ sessionId, target, onClose }: PropertiesDialogProps) {
+  const { t } = useTranslation();
   const [props, setProps] = useState<sftp_svc.FileProperties | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -32,12 +34,14 @@ export function PropertiesDialog({ sessionId, target, onClose }: PropertiesDialo
     </div>
   );
 
+  const approx = (truncated: boolean | undefined) => (truncated ? ` ${t("sftp.properties.approximate")}` : "");
+
   return (
     <Dialog open={!!target} onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-base">
-            <Info className="h-4 w-4" /> Properties
+            <Info className="h-4 w-4" /> {t("sftp.properties.title")}
           </DialogTitle>
         </DialogHeader>
         {target && (
@@ -47,17 +51,26 @@ export function PropertiesDialog({ sessionId, target, onClose }: PropertiesDialo
               <div className="min-w-0 truncate font-medium">{target.entry.name}</div>
             </div>
             {error && <div className="rounded bg-destructive/10 p-2 text-xs text-destructive">{error}</div>}
-            {!error && !props && <div className="py-4 text-center text-sm text-muted-foreground">Loading...</div>}
+            {!error && !props && (
+              <div className="py-4 text-center text-sm text-muted-foreground">{t("sftp.properties.loading")}</div>
+            )}
             {props && (
               <div className="rounded-md border p-3">
-                {row("Path", props.path)}
-                {row("Type", props.isDir ? "Folder" : "File")}
-                {row("Size", `${formatBytes(props.size)} (${props.size} bytes)`)}
-                {props.isDir && row("Children", props.childCount ?? 0)}
-                {row("Mode", props.mode)}
-                {row("Owner", props.uid)}
-                {row("Group", props.gid)}
-                {row("Modified", formatDate(props.modTime))}
+                {row(t("sftp.properties.path"), props.path)}
+                {row(
+                  t("sftp.properties.type"),
+                  props.isDir ? t("sftp.properties.typeFolder") : t("sftp.properties.typeFile")
+                )}
+                {row(
+                  t("sftp.properties.size"),
+                  `${t("sftp.properties.sizeBytes", { display: formatBytes(props.size), bytes: props.size })}${approx(props.truncated)}`
+                )}
+                {props.isDir &&
+                  row(t("sftp.properties.children"), `${props.childCount ?? 0}${approx(props.truncated)}`)}
+                {row(t("sftp.properties.mode"), props.mode)}
+                {row(t("sftp.properties.owner"), props.uid)}
+                {row(t("sftp.properties.group"), props.gid)}
+                {row(t("sftp.properties.modified"), formatDate(props.modTime))}
               </div>
             )}
           </div>

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, Button, Input } from "@opskat/ui";
 
 interface NameDialogProps {
@@ -10,6 +11,7 @@ interface NameDialogProps {
 }
 
 export function NameDialog({ open, title, placeholder, onCancel, onSubmit }: NameDialogProps) {
+  const { t } = useTranslation();
   const [name, setName] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -43,10 +45,10 @@ export function NameDialog({ open, title, placeholder, onCancel, onSubmit }: Nam
         />
         <DialogFooter>
           <Button variant="outline" onClick={onCancel}>
-            Cancel
+            {t("action.cancel")}
           </Button>
           <Button onClick={submit} disabled={!name.trim()}>
-            OK
+            {t("action.ok")}
           </Button>
         </DialogFooter>
       </DialogContent>

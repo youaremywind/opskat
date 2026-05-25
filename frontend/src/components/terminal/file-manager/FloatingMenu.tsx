@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { createPortal } from "react-dom";
 import {
   Clipboard,
@@ -27,6 +28,7 @@ interface FloatingMenuProps {
 }
 
 export function FloatingMenu({ canPaste, ctx, onAction, onClose }: FloatingMenuProps) {
+  const { t } = useTranslation();
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ top: 0, left: 0 });
   const [visible, setVisible] = useState(false);
@@ -114,54 +116,56 @@ export function FloatingMenu({ canPaste, ctx, onAction, onClose }: FloatingMenuP
     >
       {multi ? (
         <>
-          {item("downloadSelected", <Download />, `Download Selected (${multiCount} items)`)}
+          {item("downloadSelected", <Download />, t("sftp.menu.downloadSelected", { count: multiCount }))}
           {separator}
-          {item("cutSelected", <Scissors />, `Cut Selected (${multiCount} items)`)}
-          {item("copySelected", <Copy />, `Copy Selected (${multiCount} items)`)}
-          {item("paste", <Clipboard />, "Paste", { disabled: !canPaste })}
+          {item("cutSelected", <Scissors />, t("sftp.menu.cutSelected", { count: multiCount }))}
+          {item("copySelected", <Copy />, t("sftp.menu.copySelected", { count: multiCount }))}
+          {item("paste", <Clipboard />, t("sftp.menu.paste"), { disabled: !canPaste })}
           {separator}
-          {item("deleteSelected", <Trash2 />, `Delete Selected (${multiCount} items)`, { destructive: true })}
+          {item("deleteSelected", <Trash2 />, t("sftp.menu.deleteSelected", { count: multiCount }), {
+            destructive: true,
+          })}
         </>
       ) : ctx.entry ? (
         ctx.entry.isDir ? (
           <>
-            {item("open", <FolderOpen />, "Open")}
-            {item("openTerminal", <Terminal />, "Open in Terminal")}
-            {item("downloadDir", <FolderDown />, "Download Folder")}
+            {item("open", <FolderOpen />, t("action.open"))}
+            {item("openTerminal", <Terminal />, t("sftp.menu.openTerminal"))}
+            {item("downloadDir", <FolderDown />, t("sftp.menu.downloadFolder"))}
             {separator}
-            {item("cut", <Scissors />, "Cut")}
-            {item("copy", <Copy />, "Copy")}
-            {item("paste", <Clipboard />, "Paste", { disabled: !canPaste })}
+            {item("cut", <Scissors />, t("sftp.menu.cut"))}
+            {item("copy", <Copy />, t("sftp.menu.copy"))}
+            {item("paste", <Clipboard />, t("sftp.menu.paste"), { disabled: !canPaste })}
             {separator}
-            {item("rename", <Edit3 />, "Rename")}
-            {item("permission", <KeyRound />, "Permission")}
-            {item("properties", <Info />, "Properties")}
+            {item("rename", <Edit3 />, t("sftp.menu.rename"))}
+            {item("permission", <KeyRound />, t("sftp.menu.permission"))}
+            {item("properties", <Info />, t("sftp.menu.properties"))}
             {separator}
-            {item("delete", <Trash2 />, "Delete", { destructive: true })}
+            {item("delete", <Trash2 />, t("sftp.menu.delete"), { destructive: true })}
           </>
         ) : (
           <>
-            {item("download", <Download />, "Download File")}
+            {item("download", <Download />, t("sftp.menu.downloadFile"))}
             {separator}
-            {item("cut", <Scissors />, "Cut")}
-            {item("copy", <Copy />, "Copy")}
-            {item("paste", <Clipboard />, "Paste", { disabled: !canPaste })}
+            {item("cut", <Scissors />, t("sftp.menu.cut"))}
+            {item("copy", <Copy />, t("sftp.menu.copy"))}
+            {item("paste", <Clipboard />, t("sftp.menu.paste"), { disabled: !canPaste })}
             {separator}
-            {item("rename", <Edit3 />, "Rename")}
-            {item("permission", <KeyRound />, "Permission")}
-            {item("properties", <Info />, "Properties")}
+            {item("rename", <Edit3 />, t("sftp.menu.rename"))}
+            {item("permission", <KeyRound />, t("sftp.menu.permission"))}
+            {item("properties", <Info />, t("sftp.menu.properties"))}
             {separator}
-            {item("delete", <Trash2 />, "Delete", { destructive: true })}
+            {item("delete", <Trash2 />, t("sftp.menu.delete"), { destructive: true })}
           </>
         )
       ) : (
         <>
-          {item("refresh", <RefreshCw />, "Refresh")}
+          {item("refresh", <RefreshCw />, t("action.refresh"))}
           {separator}
-          {item("newFolder", <FolderPlus />, "New Folder")}
-          {item("newFile", <FilePlus />, "New File")}
-          {item("paste", <Clipboard />, "Paste", { disabled: !canPaste })}
-          {item("copyCurrentPath", <Copy />, "Copy Current Path")}
+          {item("newFolder", <FolderPlus />, t("sftp.newFolder"))}
+          {item("newFile", <FilePlus />, t("sftp.menu.newFile"))}
+          {item("paste", <Clipboard />, t("sftp.menu.paste"), { disabled: !canPaste })}
+          {item("copyCurrentPath", <Copy />, t("sftp.menu.copyCurrentPath"))}
         </>
       )}
     </div>,

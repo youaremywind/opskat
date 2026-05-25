@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { File, Folder, Loader2 } from "lucide-react";
 import { Button, cn, Input, ScrollArea } from "@opskat/ui";
 import { sftp_svc } from "../../../../wailsjs/go/models";
@@ -47,6 +48,7 @@ export function FileList({
   selected,
   setSelected,
 }: FileListProps) {
+  const { t } = useTranslation();
   const sortedEntries = useMemo(() => sortEntries(entries), [entries]);
   const entryPaths = useMemo(
     () => sortedEntries.map((entry) => getEntryPath(currentPath, entry)),
@@ -237,16 +239,16 @@ export function FileList({
         )}
         {error && !loading && (
           <div className="flex flex-col items-center justify-center py-8 gap-1 px-2">
-            <span className="text-destructive text-center text-xs">Load failed</span>
+            <span className="text-destructive text-center text-xs">{t("sftp.loadError")}</span>
             <span className="text-muted-foreground text-center break-all text-[10px]">{error}</span>
             <Button variant="outline" size="xs" onClick={onRetry} className="mt-1">
-              Retry
+              {t("sftp.retry")}
             </Button>
           </div>
         )}
         {!loading && !error && entries.length === 0 && (
           <div className="flex items-center justify-center py-8">
-            <span className="text-muted-foreground">Empty directory</span>
+            <span className="text-muted-foreground">{t("sftp.empty")}</span>
           </div>
         )}
         {!loading && !error && (

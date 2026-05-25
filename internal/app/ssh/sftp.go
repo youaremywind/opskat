@@ -1,10 +1,12 @@
 package ssh
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/opskat/opskat/internal/service/sftp_svc"
 
@@ -252,8 +254,18 @@ func (s *SSH) SFTPPaste(req sftp_svc.PasteRequest) error {
 }
 
 // SFTPProperties 获取远程文件/目录属性。
+// 目录递归统计有 5s 超时保护，超时时返回近似值并置 truncated=true。
 func (s *SSH) SFTPProperties(sessionID, remotePath string) (sftp_svc.FileProperties, error) {
-	return s.sftp.Properties(sessionID, remotePath)
+	base := s.ctx
+	if base == nil {
+		base = s.appCtx
+	}
+	if base == nil {
+		base = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(base, 5*time.Second)
+	defer cancel()
+	return s.sftp.Properties(ctx, sessionID, remotePath)
 }
 
 // SFTPApplyPermissions 修改远程权限与属主。

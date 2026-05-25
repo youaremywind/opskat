@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useTranslation } from "react-i18next";
 import { Upload } from "lucide-react";
 import { toast } from "sonner";
 import { cn, ConfirmDialog } from "@opskat/ui";
@@ -62,6 +63,7 @@ export function FileManagerPanel({
   width,
   onWidthChange,
 }: FileManagerPanelProps) {
+  const { t } = useTranslation();
   const {
     currentPath,
     currentPathRef,
@@ -500,7 +502,7 @@ export function FileManagerPanel({
               <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-primary/5 border-2 border-dashed border-primary/30 rounded animate-in fade-in-0 duration-150">
                 <div className="flex flex-col items-center gap-1 text-primary/60">
                   <Upload className="h-5 w-5" />
-                  <span className="text-xs">Drop files to upload</span>
+                  <span className="text-xs">{t("sftp.dropToUpload")}</span>
                 </div>
               </div>
             )}
@@ -549,10 +551,12 @@ export function FileManagerPanel({
             />
             <div className="border-t px-2 py-1 text-[11px] text-muted-foreground">
               {selected.length > 1
-                ? `Selected ${selected.length} items (${formatBytes(selectedTotalSize)})`
+                ? t("sftp.selectedItems", { count: selected.length, size: formatBytes(selectedTotalSize) })
                 : clipboard?.items.length
-                  ? `Clipboard: ${clipboard.mode} ${clipboard.items.length} item(s)`
-                  : "Ready"}
+                  ? clipboard.mode === "cut"
+                    ? t("sftp.clipboardCut", { count: clipboard.items.length })
+                    : t("sftp.clipboardCopy", { count: clipboard.items.length })
+                  : t("sftp.ready")}
             </div>
             <TransferSection tabId={tabId} transfers={tabTransfers} />
           </div>
@@ -570,20 +574,20 @@ export function FileManagerPanel({
       <ConfirmDialog
         open={!!deleteTarget}
         onOpenChange={(open) => !open && setDeleteTarget(null)}
-        title="Confirm Delete"
+        title={t("sftp.deleteConfirmTitle")}
         description={
           deleteTarget?.paths.length === 1
-            ? `Permanently delete "${deleteTarget.paths[0]?.name}"?`
-            : `Permanently delete ${deleteTarget?.paths.length ?? 0} selected items?`
+            ? t("sftp.deleteConfirmDesc", { name: deleteTarget.paths[0]?.name ?? "" })
+            : t("sftp.deleteMultiDesc", { count: deleteTarget?.paths.length ?? 0 })
         }
-        cancelText="Cancel"
-        confirmText="Delete"
+        cancelText={t("action.cancel")}
+        confirmText={t("action.delete")}
         onConfirm={handleDelete}
       />
       <NameDialog
         open={!!nameDialog}
-        title={nameDialog === "folder" ? "New Folder" : "New File"}
-        placeholder={nameDialog === "folder" ? "folder-name" : "file-name.txt"}
+        title={nameDialog === "folder" ? t("sftp.newFolder") : t("sftp.newFile")}
+        placeholder={nameDialog === "folder" ? t("sftp.folderNamePlaceholder") : t("sftp.filenamePlaceholder")}
         onCancel={() => setNameDialog(null)}
         onSubmit={submitNewName}
       />

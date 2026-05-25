@@ -41,6 +41,8 @@ type FileProperties struct {
 	UID        uint32 `json:"uid"`
 	GID        uint32 `json:"gid"`
 	ChildCount int64  `json:"childCount,omitempty"`
+	// Truncated 表示目录递归统计在达到上限/取消前提前结束，ChildCount/Size 为下界。
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 // PermissionApplyRequest updates chmod/chown data for one path.
@@ -163,8 +165,13 @@ func (s *Service) Paste(ctx context.Context, req PasteRequest) error {
 	return nil
 }
 
+// 目录递归统计上限：超过这个上限或 ctx 取消时，countRemoteDir 提前返回，
+// Properties 弹窗也据此把结果标记为近似值，避免在巨大目录上阻塞 IPC。
+const remoteDirCountLimit = 50000
+
 // Properties returns detailed metadata for one remote path.
-func (s *Service) Properties(sessionID, remotePath string) (FileProperties, error) {
+// 对于目录会递归统计子项数量和总大小，但有 ctx/上限保护，遇到大目录会提前返回近似值。
+func (s *Service) Properties(ctx context.Context, sessionID, remotePath string) (FileProperties, error) {
 	client, err := s.getSFTPClient(sessionID)
 	if err != nil {
 		return FileProperties{}, err
@@ -188,10 +195,11 @@ func (s *Service) Properties(sessionID, remotePath string) (FileProperties, erro
 	}
 
 	if info.IsDir() {
-		children, size, err := countRemoteDir(client, remotePath)
+		children, size, truncated, err := countRemoteDir(ctx, client, remotePath, remoteDirCountLimit)
 		if err == nil {
 			props.ChildCount = children
 			props.Size = size
+			props.Truncated = truncated
 		}
 		return props, nil
 	}
@@ -409,28 +417,49 @@ func copyRemoteDir(ctx context.Context, srcClient, dstClient interface {
 	return nil
 }
 
-func countRemoteDir(client interface {
+// countRemoteDir 递归统计目录下条目数与总大小。
+// ctx 取消或累计 count 超过 limit (>0) 时提前返回，truncated=true 表示结果是下界。
+func countRemoteDir(ctx context.Context, client interface {
 	ReadDir(string) ([]os.FileInfo, error)
-}, dir string) (int64, int64, error) {
+}, dir string, limit int64) (int64, int64, bool, error) {
+	if ctx.Err() != nil {
+		return 0, 0, true, nil
+	}
 	entries, err := client.ReadDir(dir)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, false, err
 	}
 	var count int64
 	var size int64
 	for _, entry := range entries {
+		if ctx.Err() != nil {
+			return count, size, true, nil
+		}
 		count++
 		fullPath := pathpkg.Join(dir, entry.Name())
 		if entry.IsDir() {
-			childCount, childSize, err := countRemoteDir(client, fullPath)
+			var remaining int64
+			if limit > 0 {
+				remaining = limit - count
+				if remaining <= 0 {
+					return count, size, true, nil
+				}
+			}
+			childCount, childSize, childTruncated, err := countRemoteDir(ctx, client, fullPath, remaining)
 			if err != nil {
-				return count, size, err
+				return count, size, false, err
 			}
 			count += childCount
 			size += childSize
+			if childTruncated {
+				return count, size, true, nil
+			}
 		} else {
 			size += entry.Size()
 		}
+		if limit > 0 && count >= limit {
+			return count, size, true, nil
+		}
 	}
-	return count, size, nil
+	return count, size, false, nil
 }

@@ -1104,11 +1104,13 @@ func (s *Session) handleSyncPayload(payload string) bool {
 		}
 		s.shellPID = pid
 		s.syncDirty = true
-		s.internalScriptEcho = false
-		s.internalEchoDropLn = false
 		bootstrap := s.syncBootstrapCh
 		s.syncBootstrapCh = nil
 		s.syncMu.Unlock()
+		// internalScriptEcho/internalEchoDropLn 由 outputFilterMu 保护；
+		// 调用方 filterOutput 已持有该锁，这里直接写入即可（sync.Mutex 不可重入，不能再 Lock）。
+		s.internalScriptEcho = false
+		s.internalEchoDropLn = false
 		if bootstrap != nil {
 			close(bootstrap)
 		}

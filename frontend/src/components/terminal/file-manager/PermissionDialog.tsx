@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { File, Folder, Shield } from "lucide-react";
 import {
   Button,
@@ -60,6 +61,7 @@ function bitsToMode(bits: Record<PermKey, boolean>) {
 }
 
 export function PermissionDialog({ sessionId, target, onClose, onSaved }: PermissionDialogProps) {
+  const { t } = useTranslation();
   const [props, setProps] = useState<sftp_svc.FileProperties | null>(null);
   const [bits, setBits] = useState<Record<PermKey, boolean>>(modeToBits("644"));
   const [mode, setMode] = useState("644");
@@ -88,11 +90,11 @@ export function PermissionDialog({ sessionId, target, onClose, onSaved }: Permis
   const rows = useMemo(
     () =>
       [
-        ["Owner", "or", "ow", "ox"],
-        ["Group", "gr", "gw", "gx"],
-        ["Others", "tr", "tw", "tx"],
+        [t("sftp.permission.owner"), "or", "ow", "ox"],
+        [t("sftp.permission.group"), "gr", "gw", "gx"],
+        [t("sftp.permission.others"), "tr", "tw", "tx"],
       ] as Array<[string, PermKey, PermKey, PermKey]>,
-    []
+    [t]
   );
 
   const updateBit = (key: PermKey, checked: boolean) => {
@@ -134,7 +136,7 @@ export function PermissionDialog({ sessionId, target, onClose, onSaved }: Permis
       <DialogContent className="sm:max-w-xl gap-3">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-base">
-            <Shield className="h-4 w-4" /> Permission & Ownership
+            <Shield className="h-4 w-4" /> {t("sftp.permission.title")}
           </DialogTitle>
         </DialogHeader>
         {target && (
@@ -149,12 +151,12 @@ export function PermissionDialog({ sessionId, target, onClose, onSaved }: Permis
             </div>
 
             <div className="rounded-md border p-3">
-              <div className="mb-2 text-xs font-medium text-muted-foreground">Linux Permission Matrix</div>
+              <div className="mb-2 text-xs font-medium text-muted-foreground">{t("sftp.permission.matrix")}</div>
               <div className="grid grid-cols-4 gap-2 text-xs">
                 <div />
-                <div>Read</div>
-                <div>Write</div>
-                <div>Execute</div>
+                <div>{t("sftp.permission.read")}</div>
+                <div>{t("sftp.permission.write")}</div>
+                <div>{t("sftp.permission.execute")}</div>
                 {rows.map(([label, r, w, x]) => (
                   <div className="contents" key={label}>
                     <div className="font-medium">{label}</div>
@@ -171,15 +173,15 @@ export function PermissionDialog({ sessionId, target, onClose, onSaved }: Permis
 
             <div className="rounded-md border p-3 space-y-3">
               <div className="grid grid-cols-[7rem_1fr] items-center gap-2">
-                <Label>Octal Mode</Label>
+                <Label>{t("sftp.permission.octalMode")}</Label>
                 <Input value={mode} onChange={(e) => applyMode(e.target.value)} className="h-8 font-mono" />
               </div>
               <div className="flex flex-wrap gap-1">
                 {[
-                  ["Web static", "644"],
-                  ["Directory", "755"],
-                  ["Private key", "600"],
-                  ["Executable", "755"],
+                  [t("sftp.permission.presetWebStatic"), "644"],
+                  [t("sftp.permission.presetDirectory"), "755"],
+                  [t("sftp.permission.presetPrivateKey"), "600"],
+                  [t("sftp.permission.presetExecutable"), "755"],
                 ].map(([label, value]) => (
                   <Button key={label} type="button" variant="outline" size="xs" onClick={() => applyMode(value)}>
                     {label} → {value}
@@ -189,23 +191,23 @@ export function PermissionDialog({ sessionId, target, onClose, onSaved }: Permis
             </div>
 
             <div className="rounded-md border p-3 space-y-2">
-              <div className="text-xs font-medium text-muted-foreground">Chown</div>
+              <div className="text-xs font-medium text-muted-foreground">{t("sftp.permission.chown")}</div>
               <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <Label className="text-xs">Owner User</Label>
+                  <Label className="text-xs">{t("sftp.permission.ownerUser")}</Label>
                   <Input
                     value={owner}
                     onChange={(e) => setOwner(e.target.value)}
-                    placeholder="www or root"
+                    placeholder={t("sftp.permission.ownerUserPlaceholder")}
                     className="h-8"
                   />
                 </div>
                 <div>
-                  <Label className="text-xs">Owner Group</Label>
+                  <Label className="text-xs">{t("sftp.permission.ownerGroup")}</Label>
                   <Input
                     value={group}
                     onChange={(e) => setGroup(e.target.value)}
-                    placeholder="www-data or root"
+                    placeholder={t("sftp.permission.ownerGroupPlaceholder")}
                     className="h-8"
                   />
                 </div>
@@ -216,13 +218,13 @@ export function PermissionDialog({ sessionId, target, onClose, onSaved }: Permis
               <div className="rounded-md border p-3 space-y-2">
                 <label className="flex items-center gap-2 text-xs font-medium">
                   <Checkbox checked={recursive} onCheckedChange={(checked) => setRecursive(checked === true)} />
-                  Recursive
+                  {t("sftp.permission.recursive")}
                 </label>
                 <div className={cn("grid gap-1 pl-6 text-xs", !recursive && "opacity-40 pointer-events-none")}>
                   {[
-                    ["all", "Apply to all files and directories"],
-                    ["files", "Only files"],
-                    ["dirs", "Only directories"],
+                    ["all", t("sftp.permission.recursiveAll")],
+                    ["files", t("sftp.permission.recursiveFiles")],
+                    ["dirs", t("sftp.permission.recursiveDirs")],
                   ].map(([value, label]) => (
                     <label key={value} className="flex items-center gap-2">
                       <input
@@ -242,10 +244,10 @@ export function PermissionDialog({ sessionId, target, onClose, onSaved }: Permis
         )}
         <DialogFooter>
           <Button variant="outline" onClick={onClose} disabled={saving}>
-            Cancel
+            {t("action.cancel")}
           </Button>
           <Button onClick={save} disabled={saving || !target}>
-            OK
+            {t("action.ok")}
           </Button>
         </DialogFooter>
       </DialogContent>
