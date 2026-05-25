@@ -1,11 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { FileManagerPanel } from "../components/terminal/FileManagerPanel";
 import { useTerminalStore, type TerminalDirectorySyncState } from "../stores/terminalStore";
 import { useSFTPStore, type SFTPTransfer } from "../stores/sftpStore";
 import { ChangeSSHDirectory } from "../../wailsjs/go/ssh/SSH";
 import { SFTPListDir } from "../../wailsjs/go/ssh/SSH";
+import { SFTPRename } from "../../wailsjs/go/ssh/SSH";
 
 const { toastError } = vi.hoisted(() => ({
   toastError: vi.fn(),
@@ -48,6 +49,26 @@ function makeTransfer(
     status: "active",
     ...partial,
   };
+}
+
+function createDragDataTransfer(): DataTransfer {
+  const data = new Map<string, string>();
+  return {
+    dropEffect: "move",
+    effectAllowed: "all",
+    files: [] as unknown as FileList,
+    items: [] as unknown as DataTransferItemList,
+    types: [],
+    clearData: vi.fn((type?: string) => {
+      if (type) data.delete(type);
+      else data.clear();
+    }),
+    getData: vi.fn((type: string) => data.get(type) ?? ""),
+    setData: vi.fn((type: string, value: string) => {
+      data.set(type, value);
+    }),
+    setDragImage: vi.fn(),
+  } as unknown as DataTransfer;
 }
 
 describe("FileManagerPanel", () => {
@@ -198,5 +219,60 @@ describe("FileManagerPanel", () => {
     });
 
     await waitFor(() => expect(SFTPListDir).toHaveBeenCalledWith("s1", "/srv/app"));
+  });
+
+  it("moves a dragged file into a dropped folder", async () => {
+    vi.mocked(SFTPListDir).mockResolvedValue([
+      { name: "logs", isDir: true, size: 0, modTime: 0 },
+      { name: "app.log", isDir: false, size: 42, modTime: 0 },
+    ]);
+
+    render(<FileManagerPanel tabId="tab1" sessionId="s1" isOpen width={280} onWidthChange={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByText("app.log")).toBeInTheDocument());
+
+    const fileRow = screen.getByText("app.log").closest("[data-sftp-entry-row]");
+    const folderRow = screen.getByText("logs").closest("[data-sftp-entry-row]");
+    expect(fileRow).toBeTruthy();
+    expect(folderRow).toBeTruthy();
+
+    const dataTransfer = createDragDataTransfer();
+    fireEvent.dragStart(fileRow!, { dataTransfer });
+    fireEvent.dragOver(folderRow!, { dataTransfer });
+    fireEvent.drop(folderRow!, { dataTransfer });
+
+    await waitFor(() => {
+      expect(SFTPRename).toHaveBeenCalledWith("s1", "/srv/app/app.log", "/srv/app/logs/app.log");
+    });
+  });
+
+  it("moves a file when pointer-dragged onto a folder row", async () => {
+    vi.mocked(SFTPListDir).mockResolvedValue([
+      { name: "logs", isDir: true, size: 0, modTime: 0 },
+      { name: "app.log", isDir: false, size: 42, modTime: 0 },
+    ]);
+
+    render(<FileManagerPanel tabId="tab1" sessionId="s1" isOpen width={280} onWidthChange={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByText("app.log")).toBeInTheDocument());
+
+    const fileRow = screen.getByText("app.log").closest("[data-sftp-entry-row]");
+    const folderRow = screen.getByText("logs").closest("[data-sftp-entry-row]");
+    expect(fileRow).toBeTruthy();
+    expect(folderRow).toBeTruthy();
+
+    const elementFromPoint = vi.spyOn(document, "elementFromPoint").mockReturnValue(folderRow as Element);
+
+    try {
+      fireEvent.pointerDown(fileRow!, { button: 0, buttons: 1, clientX: 10, clientY: 10, pointerId: 1 });
+      fireEvent.pointerMove(fileRow!, { buttons: 1, clientX: 48, clientY: 48, pointerId: 1 });
+      fireEvent.pointerUp(fileRow!, { button: 0, clientX: 48, clientY: 48, pointerId: 1 });
+
+      await waitFor(() => {
+        expect(SFTPRename).toHaveBeenCalledWith("s1", "/srv/app/app.log", "/srv/app/logs/app.log");
+      });
+    } finally {
+      elementFromPoint.mockRestore();
+    }
   });
 });
