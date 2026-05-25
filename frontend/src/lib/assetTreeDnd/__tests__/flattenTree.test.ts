@@ -33,12 +33,13 @@ describe("flattenTree", () => {
       collapsedGroupIDs: new Set(),
       shouldHideEmpty: false,
     });
-    expect(rows.map((r) => `${r.kind}-${"groupID" in r ? r.groupID : "assetID" in r ? r.assetID : "?"}`)).toEqual([
-      "group-header-1",
-      "group-header-11",
-      "asset-110",
-      "asset-100",
-    ]);
+    expect(
+      rows.map((r) => {
+        if (r.kind === "asset") return `asset-${r.assetID}`;
+        if (r.kind === "group-header") return `group-header-${r.groupID}`;
+        return `empty-${r.groupID}`;
+      })
+    ).toEqual(["group-header-1", "group-header-11", "asset-110", "asset-100"]);
   });
 
   it("折叠 group → 不展开其子项，但 header 仍然 push", () => {
