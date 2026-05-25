@@ -70,6 +70,7 @@ import {
   DndContext,
   DragOverlay,
   PointerSensor,
+  useDraggable,
   useSensor,
   useSensors,
   type DragCancelEvent,
@@ -886,7 +887,6 @@ function GroupItem({
   const expanded = useAssetStore((s) => !s.collapsedGroupIds.includes(group.ID));
   const toggleGroupCollapsed = useAssetStore((s) => s.toggleGroupCollapsed);
   const isDndHighlighted = useAssetTreeDndStore((s) => s.highlightedGroupID === group.ID);
-  const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const children = group.ID > 0 ? childGroups(group.ID) : [];
   const totalCount = countAssetsInGroup(group.ID);
   const isUngrouped = group.ID === 0;
@@ -978,7 +978,6 @@ function GroupItem({
               selectedAssetId={selectedAssetId}
               activeAssetIds={activeAssetIds}
               connectingAssetIds={connectingAssetIds}
-              clickTimerRef={clickTimerRef}
               onSelectAsset={onSelectAsset}
               onEditAsset={onEditAsset}
               onCopyAsset={onCopyAsset}
@@ -1011,30 +1010,12 @@ function GroupItem({
   );
 }
 
-function AssetRow({
-  asset,
-  depth,
-  selectedAssetId,
-  activeAssetIds,
-  connectingAssetIds,
-  clickTimerRef,
-  onSelectAsset,
-  onEditAsset,
-  onCopyAsset,
-  onConnectAsset,
-  onConnectAssetInNewTab,
-  onOpenFileManager,
-  onDeleteAsset,
-  onMoveAsset,
-  onOpenInfoTab,
-  t,
-}: {
+type AssetRowProps = {
   asset: asset_entity.Asset;
   depth: number;
   selectedAssetId: number | null;
   activeAssetIds: Set<number>;
   connectingAssetIds: Set<number>;
-  clickTimerRef: React.MutableRefObject<ReturnType<typeof setTimeout> | null>;
   onSelectAsset: (asset: asset_entity.Asset) => void;
   onEditAsset: (asset: asset_entity.Asset) => void;
   onCopyAsset: (asset: asset_entity.Asset) => void;
@@ -1045,127 +1026,149 @@ function AssetRow({
   onMoveAsset: (id: number, direction: string) => void;
   onOpenInfoTab?: (type: "asset" | "group", id: number, name: string, icon?: string) => void;
   t: (key: string) => string;
-}) {
-  /* eslint-disable react-hooks/refs */
-  const AssetIcon = asset.Icon ? getIconComponent(asset.Icon) : Server;
-  const isConnecting = connectingAssetIds.has(asset.ID);
-  const sortable = useSortable({ id: `asset-${asset.ID}` });
-  const style: React.CSSProperties = {
-    paddingLeft: `${20 + (depth + 1) * 12}px`,
-    opacity: sortable.isDragging ? 0.5 : undefined,
-  };
-  const assetActivatorProps = {
-    ...sortable.attributes,
-    ...sortable.listeners,
-  };
+};
 
+// Thin wrapper: only this component subscribes to DndContext. It re-renders on every
+// drag move, but its body is just a div + children passthrough, and `children` is the
+// same React element reference as long as AssetRowContent's props don't change, so
+// React's reconciler skips the heavy subtree.
+function AssetRowDraggable({ id, children }: { id: string; children: React.ReactNode }) {
+  const { setNodeRef, attributes, listeners, isDragging } = useDraggable({ id });
   return (
     <div
-      ref={sortable.setNodeRef}
-      data-asset-tree-row={`asset-${asset.ID}`}
+      ref={setNodeRef}
+      data-asset-tree-row={id}
       className="relative"
       style={{
-        zIndex: sortable.isDragging ? 20 : undefined,
+        zIndex: isDragging ? 20 : undefined,
+        opacity: isDragging ? 0.5 : undefined,
       }}
+      {...attributes}
+      {...listeners}
     >
-      <ContextMenu>
-        <ContextMenuTrigger asChild>
-          <div
-            className={`flex items-center gap-1.5 rounded-md pr-2 py-1.5 text-sm outline-none focus-visible:ring-1 focus-visible:ring-sidebar-ring/60 cursor-pointer select-none transition-colors duration-150 ${
-              selectedAssetId === asset.ID
-                ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                : "hover:bg-sidebar-accent"
-            }`}
-            style={style}
-            {...assetActivatorProps}
-            onClick={() => {
-              if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
-              clickTimerRef.current = setTimeout(() => {
-                clickTimerRef.current = null;
-                onSelectAsset(asset);
-              }, 200);
-            }}
-            onDoubleClick={() => {
-              if (clickTimerRef.current) {
-                clearTimeout(clickTimerRef.current);
-                clickTimerRef.current = null;
-              }
-              onSelectAsset(asset);
-              const def = getAssetType(asset.Type);
-              if (def?.canConnect && (def.connectAction === "query" || !isConnecting)) {
-                onConnectAsset(asset);
-              }
-            }}
-          >
-            {isConnecting ? (
-              <Loader2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground animate-spin" />
-            ) : (
-              <AssetIcon
-                className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
-                style={asset.Icon ? { color: getIconColor(asset.Icon) } : undefined}
-              />
-            )}
-            {activeAssetIds.has(asset.ID) && <span className="h-1.5 w-1.5 rounded-full bg-success shrink-0" />}
-            <span className="truncate text-sidebar-foreground">{asset.Name}</span>
-          </div>
-        </ContextMenuTrigger>
-        <ContextMenuContent>
-          {getAssetType(asset.Type)?.canConnect && (
-            <ContextMenuItem onClick={() => onConnectAsset(asset)} disabled={isConnecting}>
-              {isConnecting ? (
-                <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
-              ) : (
-                <TerminalSquare className="h-3.5 w-3.5 mr-1.5" />
-              )}
-              {t("asset.connect")}
-            </ContextMenuItem>
-          )}
-          {getAssetType(asset.Type)?.canConnectInNewTab && onConnectAssetInNewTab && (
-            <ContextMenuItem onClick={() => onConnectAssetInNewTab(asset)} disabled={isConnecting}>
-              <ExternalLink className="h-3.5 w-3.5 mr-1.5" />
-              {t("asset.connectInNewTab")}
-            </ContextMenuItem>
-          )}
-          {asset.Type === "ssh" && onOpenFileManager && (
-            <ContextMenuItem onClick={() => onOpenFileManager(asset)}>
-              <FolderOpen className="h-3.5 w-3.5 mr-1.5" />
-              {t("sftp.fileManager")}
-            </ContextMenuItem>
-          )}
-          {onOpenInfoTab && (
-            <ContextMenuItem onClick={() => onOpenInfoTab("asset", asset.ID, asset.Name, asset.Icon)}>
-              <Eye className="h-3.5 w-3.5 mr-1.5" />
-              {t("action.editPermission")}
-            </ContextMenuItem>
-          )}
-          <ContextMenuItem onClick={() => onEditAsset(asset)}>
-            <Pencil className="h-3.5 w-3.5 mr-1.5" />
-            {t("action.edit")}
-          </ContextMenuItem>
-          <ContextMenuItem onClick={() => onCopyAsset(asset)}>
-            <Copy className="h-3.5 w-3.5 mr-1.5" />
-            {t("action.copy")}
-          </ContextMenuItem>
-          <ContextMenuSeparator />
-          <ContextMenuItem onClick={() => onMoveAsset(asset.ID, "up")}>
-            <ArrowUp className="h-3.5 w-3.5 mr-1.5" />
-            {t("asset.moveUp")}
-          </ContextMenuItem>
-          <ContextMenuItem onClick={() => onMoveAsset(asset.ID, "down")}>
-            <ArrowDown className="h-3.5 w-3.5 mr-1.5" />
-            {t("asset.moveDown")}
-          </ContextMenuItem>
-          <ContextMenuItem onClick={() => onMoveAsset(asset.ID, "top")}>
-            <ChevronsUp className="h-3.5 w-3.5 mr-1.5" />
-            {t("asset.moveTop")}
-          </ContextMenuItem>
-          <ContextMenuSeparator />
-          <ContextMenuItem className="text-destructive" onClick={() => onDeleteAsset(asset)}>
-            <Trash2 className="h-3.5 w-3.5 mr-1.5" />
-            {t("action.delete")}
-          </ContextMenuItem>
-        </ContextMenuContent>
-      </ContextMenu>
+      {children}
     </div>
   );
 }
+
+function AssetRow(props: AssetRowProps) {
+  return (
+    <AssetRowDraggable id={`asset-${props.asset.ID}`}>
+      <AssetRowContent {...props} />
+    </AssetRowDraggable>
+  );
+}
+
+const AssetRowContent = React.memo(function AssetRowContent({
+  asset,
+  depth,
+  selectedAssetId,
+  activeAssetIds,
+  connectingAssetIds,
+  onSelectAsset,
+  onEditAsset,
+  onCopyAsset,
+  onConnectAsset,
+  onConnectAssetInNewTab,
+  onOpenFileManager,
+  onDeleteAsset,
+  onMoveAsset,
+  onOpenInfoTab,
+  t,
+}: AssetRowProps) {
+  const AssetIcon = asset.Icon ? getIconComponent(asset.Icon) : Server;
+  const isConnecting = connectingAssetIds.has(asset.ID);
+  const style: React.CSSProperties = {
+    paddingLeft: `${20 + (depth + 1) * 12}px`,
+  };
+
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <div
+          className={`flex items-center gap-1.5 rounded-md pr-2 py-1.5 text-sm outline-none focus-visible:ring-1 focus-visible:ring-sidebar-ring/60 cursor-pointer select-none transition-colors duration-150 ${
+            selectedAssetId === asset.ID
+              ? "bg-sidebar-accent text-sidebar-accent-foreground"
+              : "hover:bg-sidebar-accent"
+          }`}
+          style={style}
+          onClick={() => onSelectAsset(asset)}
+          onDoubleClick={() => {
+            onSelectAsset(asset);
+            const def = getAssetType(asset.Type);
+            if (def?.canConnect && (def.connectAction === "query" || !isConnecting)) {
+              onConnectAsset(asset);
+            }
+          }}
+        >
+          {isConnecting ? (
+            <Loader2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground animate-spin" />
+          ) : (
+            <AssetIcon
+              className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+              style={asset.Icon ? { color: getIconColor(asset.Icon) } : undefined}
+            />
+          )}
+          {activeAssetIds.has(asset.ID) && <span className="h-1.5 w-1.5 rounded-full bg-success shrink-0" />}
+          <span className="truncate text-sidebar-foreground">{asset.Name}</span>
+        </div>
+      </ContextMenuTrigger>
+      <ContextMenuContent>
+        {getAssetType(asset.Type)?.canConnect && (
+          <ContextMenuItem onClick={() => onConnectAsset(asset)} disabled={isConnecting}>
+            {isConnecting ? (
+              <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+            ) : (
+              <TerminalSquare className="h-3.5 w-3.5 mr-1.5" />
+            )}
+            {t("asset.connect")}
+          </ContextMenuItem>
+        )}
+        {getAssetType(asset.Type)?.canConnectInNewTab && onConnectAssetInNewTab && (
+          <ContextMenuItem onClick={() => onConnectAssetInNewTab(asset)} disabled={isConnecting}>
+            <ExternalLink className="h-3.5 w-3.5 mr-1.5" />
+            {t("asset.connectInNewTab")}
+          </ContextMenuItem>
+        )}
+        {asset.Type === "ssh" && onOpenFileManager && (
+          <ContextMenuItem onClick={() => onOpenFileManager(asset)}>
+            <FolderOpen className="h-3.5 w-3.5 mr-1.5" />
+            {t("sftp.fileManager")}
+          </ContextMenuItem>
+        )}
+        {onOpenInfoTab && (
+          <ContextMenuItem onClick={() => onOpenInfoTab("asset", asset.ID, asset.Name, asset.Icon)}>
+            <Eye className="h-3.5 w-3.5 mr-1.5" />
+            {t("action.editPermission")}
+          </ContextMenuItem>
+        )}
+        <ContextMenuItem onClick={() => onEditAsset(asset)}>
+          <Pencil className="h-3.5 w-3.5 mr-1.5" />
+          {t("action.edit")}
+        </ContextMenuItem>
+        <ContextMenuItem onClick={() => onCopyAsset(asset)}>
+          <Copy className="h-3.5 w-3.5 mr-1.5" />
+          {t("action.copy")}
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem onClick={() => onMoveAsset(asset.ID, "up")}>
+          <ArrowUp className="h-3.5 w-3.5 mr-1.5" />
+          {t("asset.moveUp")}
+        </ContextMenuItem>
+        <ContextMenuItem onClick={() => onMoveAsset(asset.ID, "down")}>
+          <ArrowDown className="h-3.5 w-3.5 mr-1.5" />
+          {t("asset.moveDown")}
+        </ContextMenuItem>
+        <ContextMenuItem onClick={() => onMoveAsset(asset.ID, "top")}>
+          <ChevronsUp className="h-3.5 w-3.5 mr-1.5" />
+          {t("asset.moveTop")}
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem className="text-destructive" onClick={() => onDeleteAsset(asset)}>
+          <Trash2 className="h-3.5 w-3.5 mr-1.5" />
+          {t("action.delete")}
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
+  );
+});

@@ -126,7 +126,7 @@ describe("AssetTree context menu", () => {
   it("uses the full asset row as the drag handle", () => {
     renderTree();
 
-    const assetRow = screen.getByText("Asset A").closest("div");
+    const assetRow = screen.getByText("Asset A").closest("[data-asset-tree-row]");
 
     expect(assetRow).toHaveAttribute("role", "button");
   });
