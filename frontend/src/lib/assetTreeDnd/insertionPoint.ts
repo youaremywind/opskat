@@ -34,11 +34,7 @@ export function rowKey(row: Row): string {
   }
 }
 
-function isGroupSelfOrDescendant(
-  targetGroupID: number,
-  ancestorID: number,
-  groups: group_entity.Group[]
-): boolean {
+function isGroupSelfOrDescendant(targetGroupID: number, ancestorID: number, groups: group_entity.Group[]): boolean {
   if (targetGroupID === ancestorID) return true;
   const byID = new Map(groups.map((g) => [g.ID, g] as const));
   let cur = byID.get(targetGroupID);

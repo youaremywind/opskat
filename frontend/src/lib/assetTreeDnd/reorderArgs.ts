@@ -54,11 +54,7 @@ function computeAssetArgs(
   }
 }
 
-function computeGroupArgs(
-  point: InsertionPoint,
-  activeID: number,
-  groups: group_entity.Group[]
-): ReorderArgs {
+function computeGroupArgs(point: InsertionPoint, activeID: number, groups: group_entity.Group[]): ReorderArgs {
   switch (point.kind) {
     case "before-asset":
     case "after-asset":

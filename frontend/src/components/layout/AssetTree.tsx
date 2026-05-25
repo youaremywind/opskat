@@ -46,12 +46,16 @@ import {
 import { getIconComponent, getIconColor } from "@/components/asset/IconPicker";
 import { filterAssets } from "@/lib/assetSearch";
 import {
-  getAssetTreeMoveBeforeId,
-  getAssetTreeTargetContainerId,
-  parseAssetTreeDndId,
-  reorderAssetsOptimistically,
-} from "@/lib/assetTreeReorder";
-import { type AssetTreeSortableItem, type AssetTreeTargetKind } from "@/lib/assetTreeReorder";
+  flattenTree,
+  computeInsertionPoint,
+  insertionToReorderArgs,
+  rowKey,
+  useAssetTreeDndStore,
+  type InsertionPoint,
+  type Row,
+  type RowRect,
+} from "@/lib/assetTreeDnd";
+import { reorderAssetsOptimistically } from "@/lib/assetTreeReorderOptimistic";
 import { getAssetType } from "@/lib/assetTypes";
 import { getAssetTypeOptions, matchSelectedTypes } from "@/lib/assetTypes/options";
 import { AssetTypeFilterButton } from "@/components/asset/AssetTypeFilterButton";
@@ -66,15 +70,14 @@ import {
   DndContext,
   DragOverlay,
   PointerSensor,
-  closestCenter,
-  useDroppable,
   useSensor,
   useSensors,
+  type DragCancelEvent,
   type DragEndEvent,
+  type DragMoveEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
-import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
-import { CSS } from "@dnd-kit/utilities";
+import { useSortable } from "@dnd-kit/sortable";
 
 interface AssetTreeProps {
   collapsed: boolean;
@@ -131,6 +134,68 @@ function afterDragCleanupFrame() {
     }
     setTimeout(resolve, 0);
   });
+}
+
+function projectIndicator(
+  point: InsertionPoint,
+  rowsList: Row[],
+  rects: Map<string, RowRect>
+): { y: number | null; depth: number | null } {
+  if (point.kind === "invalid") {
+    return { y: null, depth: null };
+  }
+  if (point.kind === "root-end") {
+    if (rowsList.length > 0) {
+      const last = rowsList[rowsList.length - 1];
+      const rect = rects.get(rowKey(last));
+      if (rect) return { y: rect.bottom, depth: 0 };
+    }
+    return { y: null, depth: null };
+  }
+  if (point.kind === "before-asset" || point.kind === "before-group") {
+    const target =
+      point.kind === "before-asset"
+        ? rowsList.find((r) => r.kind === "asset" && r.assetID === point.assetID)
+        : rowsList.find((r) => r.kind === "group-header" && r.groupID === point.groupID);
+    if (!target) return { y: null, depth: null };
+    const rect = rects.get(rowKey(target));
+    if (!rect) return { y: null, depth: null };
+    return { y: rect.top, depth: point.depth };
+  }
+  if (point.kind === "after-asset") {
+    const target = rowsList.find((r) => r.kind === "asset" && r.assetID === point.assetID);
+    if (!target) return { y: null, depth: null };
+    const rect = rects.get(rowKey(target));
+    if (!rect) return { y: null, depth: null };
+    return { y: rect.bottom, depth: point.depth };
+  }
+  // into-group-first
+  const target = rowsList.find((r) => r.kind === "group-header" && r.groupID === point.groupID);
+  if (!target) return { y: null, depth: null };
+  const rect = rects.get(rowKey(target));
+  if (!rect) return { y: null, depth: null };
+  return { y: rect.bottom, depth: point.depth + 1 };
+}
+
+function DropIndicator() {
+  const y = useAssetTreeDndStore((s) => s.indicatorY);
+  const depth = useAssetTreeDndStore((s) => s.indicatorDepth);
+  if (y === null) return null;
+  return (
+    <div
+      className="pointer-events-none fixed left-0 right-0 z-50 h-0.5 bg-primary"
+      style={{
+        top: y - 1,
+        marginLeft: depth ? `${20 + depth * 12}px` : "20px",
+      }}
+    />
+  );
+}
+
+function parseActive(id: string): { kind: "asset" | "group"; id: number } | null {
+  const m = /^(asset|group)-(\d+)$/.exec(id);
+  if (!m) return null;
+  return { kind: m[1] as "asset" | "group", id: Number(m[2]) };
 }
 
 export function AssetTree({
@@ -194,10 +259,12 @@ export function AssetTree({
 
   const typeOptions = useMemo(() => getAssetTypeOptions(extensions), [extensions]);
 
-  const typeFilteredAssets = matchSelectedTypes(assets, selectedTypes, typeOptions);
-  const filteredAssets = filter
-    ? filterAssets(typeFilteredAssets, groups, { query: filter }).map((r) => r.asset)
-    : typeFilteredAssets;
+  const filteredAssets = useMemo(() => {
+    const typeFilteredAssets = matchSelectedTypes(assets, selectedTypes, typeOptions);
+    return filter
+      ? filterAssets(typeFilteredAssets, groups, { query: filter }).map((r) => r.asset)
+      : typeFilteredAssets;
+  }, [assets, selectedTypes, typeOptions, filter, groups]);
 
   // Group assets by GroupID
   const groupedAssets = new Map<number, asset_entity.Asset[]>();
@@ -270,127 +337,130 @@ export function AssetTree({
   // 5px 移动门槛 → 单击/双击不被误识别成拖动
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
 
-  // 拖动用的扁平 id 列表:DFS 顺序展开所有可见分组与资产
-  const sortableIds = useMemo(() => {
-    const ids: string[] = [];
-    const walk = (parentId: number) => {
-      for (const g of childGroups(parentId)) {
-        ids.push(`group-${g.ID}`);
-        if (!collapsedGroupIds.includes(g.ID)) {
-          walk(g.ID);
-          for (const a of groupedAssets.get(g.ID) || []) {
-            ids.push(`asset-${a.ID}`);
-          }
-        }
-      }
-    };
-    walk(0);
-    if ((groupedAssets.get(0) || []).length > 0) {
-      ids.push("group-0");
-      if (!collapsedGroupIds.includes(0)) {
-        for (const a of groupedAssets.get(0) || []) {
-          ids.push(`asset-${a.ID}`);
-        }
-      }
+  const toggleGroupCollapsed = useAssetStore((s) => s.toggleGroupCollapsed);
+
+  const hoverExpandTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hoverExpandTargetRef = useRef<number | null>(null);
+  const rowsRef = useRef<Row[]>([]);
+
+  const rows = useMemo(
+    () =>
+      flattenTree({
+        groups,
+        assets: filteredAssets,
+        collapsedGroupIDs: new Set(collapsedGroupIds),
+        shouldHideEmpty: shouldHideEmptyGroups,
+      }),
+    [groups, filteredAssets, collapsedGroupIds, shouldHideEmptyGroups]
+  );
+  useEffect(() => {
+    rowsRef.current = rows;
+  }, [rows]);
+
+  const collectRowRects = useCallback((): Map<string, RowRect> => {
+    const m = new Map<string, RowRect>();
+    const nodes = document.querySelectorAll<HTMLElement>("[data-asset-tree-row]");
+    for (const node of nodes) {
+      const key = node.getAttribute("data-asset-tree-row");
+      if (!key) continue;
+      const rect = node.getBoundingClientRect();
+      m.set(key, { top: rect.top, bottom: rect.bottom, height: rect.height });
     }
-    return ids;
-    // childGroups / groupedAssets 每次渲染都是新引用,但底层依赖 groups/assets/hideEmptyGroups
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [groups, assets, collapsedGroupIds, hideEmptyGroups, selectedTypes, filter]);
+    return m;
+  }, []);
+
+  const clearHoverExpand = useCallback(() => {
+    if (hoverExpandTimerRef.current) {
+      clearTimeout(hoverExpandTimerRef.current);
+      hoverExpandTimerRef.current = null;
+    }
+    hoverExpandTargetRef.current = null;
+  }, []);
 
   const handleDragStart = (e: DragStartEvent) => {
-    const item = parseAssetTreeDndId(String(e.active.id));
-    if (item?.kind !== "asset") {
+    const active = parseActive(String(e.active.id));
+    if (active?.kind === "asset") {
+      setDragPreviewAsset(assets.find((asset) => asset.ID === active.id) ?? null);
+    } else {
       setDragPreviewAsset(null);
-      return;
     }
-    setDragPreviewAsset(assets.find((asset) => asset.ID === item.id) ?? null);
+  };
+
+  const handleDragMove = (e: DragMoveEvent) => {
+    const active = parseActive(String(e.active.id));
+    if (!active) return;
+    const activatorEvent = e.activatorEvent as PointerEvent;
+    const pointerY = activatorEvent.clientY + e.delta.y;
+    const rects = collectRowRects();
+
+    const point = computeInsertionPoint({
+      rows: rowsRef.current,
+      rowRects: rects,
+      pointerY,
+      active,
+      groups,
+    });
+
+    const { y, depth } = projectIndicator(point, rowsRef.current, rects);
+    useAssetTreeDndStore.getState().setIndicator(point, y, depth);
+
+    // 折叠 group hover 500ms 自动展开
+    const hoverGroupID = point.kind === "before-group" || point.kind === "into-group-first" ? point.groupID : null;
+    const hoverRow =
+      hoverGroupID !== null
+        ? rowsRef.current.find((r) => r.kind === "group-header" && r.groupID === hoverGroupID)
+        : null;
+    if (
+      hoverRow &&
+      hoverRow.kind === "group-header" &&
+      hoverRow.collapsed &&
+      hoverExpandTargetRef.current !== hoverGroupID
+    ) {
+      clearHoverExpand();
+      hoverExpandTargetRef.current = hoverGroupID;
+      hoverExpandTimerRef.current = setTimeout(() => {
+        toggleGroupCollapsed(hoverGroupID!);
+        hoverExpandTimerRef.current = null;
+      }, 500);
+    } else if (!hoverRow || hoverRow.kind !== "group-header" || !hoverRow.collapsed) {
+      clearHoverExpand();
+    }
+  };
+
+  const handleDragCancel = (_e: DragCancelEvent) => {
+    setDragPreviewAsset(null);
+    useAssetTreeDndStore.getState().clear();
+    clearHoverExpand();
   };
 
   const handleDragEnd = async (e: DragEndEvent) => {
     setDragPreviewAsset(null);
-    const { active, over } = e;
-    if (!over || active.id === over.id) return;
-    const activeStr = String(active.id);
-    const overStr = String(over.id);
-    const activeItem = parseAssetTreeDndId(activeStr);
-    const overItem = parseAssetTreeDndId(overStr);
-    if (!activeItem || !overItem || activeItem.kind === "group-drop") return;
-    const { kind: activeKind, id: activeId } = activeItem;
-    const { kind: overKind, id: overId } = overItem;
-    let appliedOptimisticAssetMove = false;
+    clearHoverExpand();
+    const point = useAssetTreeDndStore.getState().point;
+    useAssetTreeDndStore.getState().clear();
+    if (!point) return;
 
+    const active = parseActive(String(e.active.id));
+    if (!active) return;
+
+    const args = insertionToReorderArgs({ point, active, groups, assets });
+    if (!args) return;
+
+    let appliedOptimistic = false;
     try {
-      if (activeKind === "asset") {
-        const target = getAssetTreeTargetContainerId({
-          activeKind: "asset",
-          overKind: overKind as AssetTreeTargetKind,
-          overId,
-          getAssetContainerId: (assetId) => assets.find((a) => a.ID === assetId)?.GroupID ?? 0,
-          getGroupContainerId: (groupId) => groups.find((g) => g.ID === groupId)?.ParentID ?? 0,
-        });
-        if (!target) return;
-
-        if (target.kind === "asset") {
-          const targetGroupID = target.containerId;
-          const assetGroupById = new Map(assets.map((a) => [a.ID, a.GroupID ?? 0] as const));
-          const beforeID = getAssetTreeMoveBeforeId({
-            sortableIds,
-            activeSortableId: activeStr,
-            overSortableId: overStr,
-            targetKind: "asset",
-            targetContainerId: targetGroupID,
-            getContainerId: (item: AssetTreeSortableItem) =>
-              item.kind === "asset" ? assetGroupById.get(item.id) : undefined,
-          });
-          if (beforeID === null) return;
-          await afterDragCleanupFrame();
-          useAssetStore.setState((state) => ({
-            assets: reorderAssetsOptimistically(state.assets, activeId, targetGroupID, beforeID),
-          }));
-          appliedOptimisticAssetMove = true;
-          await ReorderAsset(activeId, targetGroupID, beforeID);
-        } else {
-          await afterDragCleanupFrame();
-          useAssetStore.setState((state) => ({
-            assets: reorderAssetsOptimistically(state.assets, activeId, target.containerId, 0),
-          }));
-          appliedOptimisticAssetMove = true;
-          await ReorderAsset(activeId, target.containerId, 0);
-        }
-      } else if (activeKind === "group") {
-        if (activeId === 0) return; // 未分组桶不可拖
-        if (overKind === "group") {
-          if (overId === 0) {
-            // 拖到未分组桶 → 不支持把分组放进"未分组"里
-            return;
-          }
-          const overGroup = groups.find((g) => g.ID === overId);
-          const targetParentID = overGroup?.ParentID ?? 0;
-          const groupParentById = new Map(groups.map((g) => [g.ID, g.ParentID ?? 0] as const));
-          const beforeID = getAssetTreeMoveBeforeId({
-            sortableIds,
-            activeSortableId: activeStr,
-            overSortableId: overStr,
-            targetKind: "group",
-            targetContainerId: targetParentID,
-            getContainerId: (item: AssetTreeSortableItem) =>
-              item.kind === "group" ? groupParentById.get(item.id) : undefined,
-          });
-          if (beforeID === null) return;
-          await ReorderGroup(activeId, targetParentID, beforeID);
-        } else if (overKind === "asset") {
-          const overAsset = assets.find((a) => a.ID === overId);
-          if (!overAsset || overAsset.GroupID === 0) return;
-          // 拖到资产所在分组下,作为该分组末位子分组
-          await ReorderGroup(activeId, overAsset.GroupID, 0);
-        }
+      if (args.kind === "asset") {
+        await afterDragCleanupFrame();
+        useAssetStore.setState((state) => ({
+          assets: reorderAssetsOptimistically(state.assets, args.id, args.targetGroupID, args.beforeID),
+        }));
+        appliedOptimistic = true;
+        await ReorderAsset(args.id, args.targetGroupID, args.beforeID);
+      } else {
+        await ReorderGroup(args.id, args.targetParentID, args.beforeID);
       }
       await refresh();
     } catch (err) {
-      if (appliedOptimisticAssetMove) {
-        void refresh();
-      }
+      if (appliedOptimistic) void refresh();
       toast.error(String(err));
     }
   };
@@ -500,109 +570,108 @@ export function AssetTree({
       <ScrollArea className="flex-1 min-h-0">
         <DndContext
           sensors={sensors}
-          collisionDetection={closestCenter}
           onDragStart={handleDragStart}
-          onDragCancel={() => setDragPreviewAsset(null)}
+          onDragMove={handleDragMove}
+          onDragCancel={handleDragCancel}
           onDragEnd={handleDragEnd}
         >
-          <SortableContext items={sortableIds} strategy={verticalListSortingStrategy}>
-            <div className="p-2 space-y-0.5 isolate">
-              {visibleRootGroups.map((group) => (
-                <GroupItem
-                  key={group.ID}
-                  group={group}
-                  assets={groupedAssets.get(group.ID) || []}
-                  allGroupedAssets={groupedAssets}
-                  childGroups={childGroups}
-                  countAssetsInGroup={countAssetsInGroup}
-                  selectedAssetId={selectedAssetId}
-                  activeAssetIds={activeAssetIds}
-                  connectingAssetIds={connectingAssetIds}
-                  onSelectAsset={onSelectAsset}
-                  onAddAsset={onAddAsset}
-                  onEditAsset={onEditAsset}
-                  onCopyAsset={onCopyAsset}
-                  onConnectAsset={onConnectAsset}
-                  onConnectAssetInNewTab={onConnectAssetInNewTab}
-                  onOpenFileManager={onOpenFileManager}
-                  onEditGroup={onEditGroup}
-                  onGroupDetail={onGroupDetail}
-                  onDeleteAsset={(asset: asset_entity.Asset) => setDeleteAssetConfirm(asset)}
-                  onMoveAsset={handleMoveAsset}
-                  onOpenInfoTab={onOpenInfoTab}
-                  onGroupContextMenu={handleGroupContextMenu}
-                  depth={0}
-                  t={t}
-                />
-              ))}
-              {rootAssets.length > 0 && (
-                <GroupItem
-                  group={
-                    new group_entity.Group({
-                      ID: 0,
-                      Name: t("asset.ungrouped"),
-                    })
-                  }
-                  assets={rootAssets}
-                  allGroupedAssets={groupedAssets}
-                  childGroups={() => []}
-                  countAssetsInGroup={() => rootAssets.length}
-                  selectedAssetId={selectedAssetId}
-                  activeAssetIds={activeAssetIds}
-                  connectingAssetIds={connectingAssetIds}
-                  onSelectAsset={onSelectAsset}
-                  onAddAsset={onAddAsset}
-                  onEditAsset={onEditAsset}
-                  onCopyAsset={onCopyAsset}
-                  onConnectAsset={onConnectAsset}
-                  onConnectAssetInNewTab={onConnectAssetInNewTab}
-                  onOpenFileManager={onOpenFileManager}
-                  onEditGroup={onEditGroup}
-                  onGroupDetail={onGroupDetail}
-                  onDeleteAsset={(asset) => setDeleteAssetConfirm(asset)}
-                  onMoveAsset={handleMoveAsset}
-                  onOpenInfoTab={onOpenInfoTab}
-                  onGroupContextMenu={handleGroupContextMenu}
-                  depth={0}
-                  t={t}
-                />
-              )}
-              {treeIsEmpty && (
-                <div className="flex flex-col items-center gap-2 px-3 py-6 text-center">
-                  <div className="flex h-8 w-8 items-center justify-center rounded-md bg-muted text-muted-foreground">
-                    <Server className="h-4 w-4" />
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    <p className="text-xs font-medium text-sidebar-foreground">
-                      {t(isFilteredEmpty ? "asset.noMatchTitle" : "asset.emptyTitle")}
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      {t(isFilteredEmpty ? "asset.noMatchDesc" : "asset.emptyDesc")}
-                    </p>
-                  </div>
-                  {isFilteredEmpty ? (
-                    <div className="flex flex-wrap justify-center gap-1">
-                      {hasSearchFilter && (
-                        <Button variant="ghost" size="xs" onClick={() => setFilter("")}>
-                          {t("asset.clearSearch")}
-                        </Button>
-                      )}
-                      {hasTypeFilter && (
-                        <Button variant="ghost" size="xs" onClick={() => setSelectedTypes([])}>
-                          {t("asset.clearTypeFilter")}
-                        </Button>
-                      )}
-                    </div>
-                  ) : (
-                    <Button variant="outline" size="xs" onClick={() => onAddAsset()}>
-                      <Plus className="h-3 w-3" />
-                      {t("asset.addAsset")}
-                    </Button>
-                  )}
+          <div className="p-2 space-y-0.5 isolate relative">
+            {visibleRootGroups.map((group) => (
+              <GroupItem
+                key={group.ID}
+                group={group}
+                assets={groupedAssets.get(group.ID) || []}
+                allGroupedAssets={groupedAssets}
+                childGroups={childGroups}
+                countAssetsInGroup={countAssetsInGroup}
+                selectedAssetId={selectedAssetId}
+                activeAssetIds={activeAssetIds}
+                connectingAssetIds={connectingAssetIds}
+                onSelectAsset={onSelectAsset}
+                onAddAsset={onAddAsset}
+                onEditAsset={onEditAsset}
+                onCopyAsset={onCopyAsset}
+                onConnectAsset={onConnectAsset}
+                onConnectAssetInNewTab={onConnectAssetInNewTab}
+                onOpenFileManager={onOpenFileManager}
+                onEditGroup={onEditGroup}
+                onGroupDetail={onGroupDetail}
+                onDeleteAsset={(asset: asset_entity.Asset) => setDeleteAssetConfirm(asset)}
+                onMoveAsset={handleMoveAsset}
+                onOpenInfoTab={onOpenInfoTab}
+                onGroupContextMenu={handleGroupContextMenu}
+                depth={0}
+                t={t}
+              />
+            ))}
+            {rootAssets.length > 0 && (
+              <GroupItem
+                group={
+                  new group_entity.Group({
+                    ID: 0,
+                    Name: t("asset.ungrouped"),
+                  })
+                }
+                assets={rootAssets}
+                allGroupedAssets={groupedAssets}
+                childGroups={() => []}
+                countAssetsInGroup={() => rootAssets.length}
+                selectedAssetId={selectedAssetId}
+                activeAssetIds={activeAssetIds}
+                connectingAssetIds={connectingAssetIds}
+                onSelectAsset={onSelectAsset}
+                onAddAsset={onAddAsset}
+                onEditAsset={onEditAsset}
+                onCopyAsset={onCopyAsset}
+                onConnectAsset={onConnectAsset}
+                onConnectAssetInNewTab={onConnectAssetInNewTab}
+                onOpenFileManager={onOpenFileManager}
+                onEditGroup={onEditGroup}
+                onGroupDetail={onGroupDetail}
+                onDeleteAsset={(asset) => setDeleteAssetConfirm(asset)}
+                onMoveAsset={handleMoveAsset}
+                onOpenInfoTab={onOpenInfoTab}
+                onGroupContextMenu={handleGroupContextMenu}
+                depth={0}
+                t={t}
+              />
+            )}
+            {treeIsEmpty && (
+              <div className="flex flex-col items-center gap-2 px-3 py-6 text-center">
+                <div className="flex h-8 w-8 items-center justify-center rounded-md bg-muted text-muted-foreground">
+                  <Server className="h-4 w-4" />
                 </div>
-              )}
-            </div>
-          </SortableContext>
+                <div className="flex flex-col gap-1">
+                  <p className="text-xs font-medium text-sidebar-foreground">
+                    {t(isFilteredEmpty ? "asset.noMatchTitle" : "asset.emptyTitle")}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {t(isFilteredEmpty ? "asset.noMatchDesc" : "asset.emptyDesc")}
+                  </p>
+                </div>
+                {isFilteredEmpty ? (
+                  <div className="flex flex-wrap justify-center gap-1">
+                    {hasSearchFilter && (
+                      <Button variant="ghost" size="xs" onClick={() => setFilter("")}>
+                        {t("asset.clearSearch")}
+                      </Button>
+                    )}
+                    {hasTypeFilter && (
+                      <Button variant="ghost" size="xs" onClick={() => setSelectedTypes([])}>
+                        {t("asset.clearTypeFilter")}
+                      </Button>
+                    )}
+                  </div>
+                ) : (
+                  <Button variant="outline" size="xs" onClick={() => onAddAsset()}>
+                    <Plus className="h-3 w-3" />
+                    {t("asset.addAsset")}
+                  </Button>
+                )}
+              </div>
+            )}
+            <DropIndicator />
+          </div>
           <DragOverlay dropAnimation={null}>
             {dragPreviewAsset ? (
               <AssetDragPreview asset={dragPreviewAsset} active={activeAssetIds.has(dragPreviewAsset.ID)} />
@@ -814,11 +883,8 @@ function GroupItem({
     id: `group-${group.ID}`,
     disabled: isUngrouped ? { draggable: true, droppable: false } : false,
   });
-  const contentDrop = useDroppable({ id: `group-drop-${group.ID}` });
   const groupRowStyle: React.CSSProperties = {
     paddingLeft: `${8 + depth * 12}px`,
-    transform: CSS.Transform.toString(sortable.transform),
-    transition: sortable.transition,
     opacity: sortable.isDragging ? 0.5 : undefined,
     position: "relative",
     zIndex: sortable.isDragging ? 20 : undefined,
@@ -835,6 +901,7 @@ function GroupItem({
     <div
       // dnd-kit's setNodeRef is a callback, not a React ref.
       ref={sortable.setNodeRef}
+      data-asset-tree-row={`group-${group.ID}`}
       className="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium outline-none hover:bg-sidebar-accent focus-visible:ring-1 focus-visible:ring-sidebar-ring/60 cursor-pointer transition-colors duration-150"
       style={groupRowStyle}
       onClick={() => toggleGroupCollapsed(group.ID)}
@@ -912,29 +979,12 @@ function GroupItem({
           ))}
           {assets.length === 0 && children.length === 0 && (
             <div
-              ref={contentDrop.setNodeRef}
-              className={`pr-2 py-1 text-xs text-muted-foreground cursor-pointer hover:underline ${
-                contentDrop.isOver ? "bg-sidebar-accent" : ""
-              }`}
+              data-asset-tree-row={`empty-${group.ID}`}
+              className="pr-2 py-1 text-xs text-muted-foreground cursor-pointer hover:underline"
               style={{ paddingLeft: `${20 + (depth + 1) * 12}px` }}
               onClick={() => onAddAsset(group.ID)}
             >
               + {t("asset.addAsset")}
-            </div>
-          )}
-          {(assets.length > 0 || children.length > 0) && (
-            <div
-              ref={contentDrop.setNodeRef}
-              data-asset-tree-dropzone={`group-${group.ID}-tail`}
-              className="relative h-4"
-              style={{ marginLeft: `${20 + (depth + 1) * 12}px` }}
-            >
-              <div
-                data-asset-tree-drop-indicator
-                className={`pointer-events-none absolute left-0 right-2 top-1/2 h-px -translate-y-1/2 rounded-full bg-primary transition-opacity ${
-                  contentDrop.isOver ? "opacity-100" : "opacity-0"
-                }`}
-              />
             </div>
           )}
         </div>
@@ -993,12 +1043,10 @@ function AssetRow({
 
   return (
     <div
-      // dnd-kit's setNodeRef should live on the same node that receives the sortable transform.
       ref={sortable.setNodeRef}
+      data-asset-tree-row={`asset-${asset.ID}`}
       className="relative"
       style={{
-        transform: CSS.Transform.toString(sortable.transform),
-        transition: sortable.transition,
         zIndex: sortable.isDragging ? 20 : undefined,
       }}
     >

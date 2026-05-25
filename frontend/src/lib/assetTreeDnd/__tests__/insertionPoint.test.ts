@@ -79,10 +79,7 @@ describe("computeInsertionPoint - group active", () => {
   const rects = makeRects(rows);
 
   it("group 拖到 asset row → invalid", () => {
-    const rowsWithAsset: Row[] = [
-      ...rows,
-      { kind: "asset", assetID: 20, groupID: 2, depth: 1 },
-    ];
+    const rowsWithAsset: Row[] = [...rows, { kind: "asset", assetID: 20, groupID: 2, depth: 1 }];
     const r = makeRects(rowsWithAsset);
     expect(
       computeInsertionPoint({
