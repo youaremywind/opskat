@@ -44,13 +44,13 @@ describe("computeInsertionPoint - asset active", () => {
     ).toEqual({ kind: "after-asset", assetID: 11, groupID: 1, depth: 1 });
   });
 
-  it("group header 上半区 → before-group", () => {
+  it("asset 拖到 group header 上半区 → into-group-first（避免误落未分组）", () => {
     expect(
       computeInsertionPoint({ rows, rowRects: rects, pointerY: 72 + 5, active: { kind: "asset", id: 99 }, groups })
-    ).toEqual({ kind: "before-group", groupID: 2, depth: 0 });
+    ).toEqual({ kind: "into-group-first", groupID: 2, depth: 0 });
   });
 
-  it("group header 下半区 → into-group-first", () => {
+  it("asset 拖到 group header 下半区 → into-group-first", () => {
     expect(
       computeInsertionPoint({ rows, rowRects: rects, pointerY: 72 + 18, active: { kind: "asset", id: 99 }, groups })
     ).toEqual({ kind: "into-group-first", groupID: 2, depth: 0 });
@@ -96,6 +96,12 @@ describe("computeInsertionPoint - group active", () => {
         groups,
       })
     ).toEqual({ kind: "invalid" });
+  });
+
+  it("group 拖到另一 group header 上半区 → before-group（同级排序）", () => {
+    expect(
+      computeInsertionPoint({ rows, rowRects: rects, pointerY: 5, active: { kind: "group", id: 2 }, groups })
+    ).toEqual({ kind: "before-group", groupID: 1, depth: 0 });
   });
 
   it("group 拖到自己或自己的子孙 → invalid", () => {

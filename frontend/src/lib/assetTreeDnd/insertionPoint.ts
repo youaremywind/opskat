@@ -89,7 +89,12 @@ export function computeInsertionPoint({
         if (active.kind === "group") return { kind: "invalid" };
         return { kind: "into-group-first", groupID: 0, depth: row.depth };
       }
-      if (active.kind === "group" && isGroupSelfOrDescendant(row.groupID, active.id, groups)) {
+      // asset 拖到任意 group header（无论上下半区）一律视为"进入该 group"。
+      // 不让 asset 走 before-group → 否则顶级 group 的 ParentID=0 会把 asset 误推到未分组。
+      if (active.kind === "asset") {
+        return { kind: "into-group-first", groupID: row.groupID, depth: row.depth };
+      }
+      if (isGroupSelfOrDescendant(row.groupID, active.id, groups)) {
         return { kind: "invalid" };
       }
       return upperHalf
