@@ -958,38 +958,6 @@ func isLikelyPromptPrefix(data []byte, pos int) bool {
 	return false
 }
 
-func shouldSuppressHeredocPrompt(out, data []byte, pos int) bool {
-	lineStart := bytes.LastIndexAny(out, "\r\n") + 1
-	prefix := strings.TrimSpace(string(out[lineStart:]))
-	if prefix != "" && !strings.HasSuffix(prefix, "<<'OPSKAT_SCRIPT'") && !strings.Contains(prefix, "<<'OPSKAT_SCRIPT'") {
-		return false
-	}
-	nextStart := pos + 1
-	if nextStart >= len(data) {
-		return false
-	}
-	return matchTerminalText(data[nextStart:], "heredoc>")
-}
-
-func matchTerminalText(data []byte, text string) bool {
-	idx := 0
-	for i := 0; i < len(data) && idx < len(text); i++ {
-		b := data[i]
-		if b == 0x1b {
-			i = skipANSIEscape(data, i)
-			continue
-		}
-		if b == '\r' || b == '\n' {
-			continue
-		}
-		if b != text[idx] {
-			return false
-		}
-		idx++
-	}
-	return idx == len(text)
-}
-
 func nextLineEnd(data []byte, start int) int {
 	for i := start; i < len(data); i++ {
 		if data[i] == '\r' || data[i] == '\n' {

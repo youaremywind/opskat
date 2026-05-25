@@ -346,7 +346,8 @@ func uniqueRemotePath(client interface {
 		}
 		candidate := pathpkg.Join(dir, stem+suffix+ext)
 		if _, err := client.Stat(candidate); err != nil {
-			return candidate, nil
+			// Stat 失败视为"名字可用"：SFTP 服务端常返回通用错误而非 ENOENT。
+			return candidate, nil //nolint:nilerr
 		}
 	}
 	return "", fmt.Errorf("cannot find available copy name for %s", desired)
@@ -423,7 +424,8 @@ func countRemoteDir(ctx context.Context, client interface {
 	ReadDir(string) ([]os.FileInfo, error)
 }, dir string, limit int64) (int64, int64, bool, error) {
 	if ctx.Err() != nil {
-		return 0, 0, true, nil
+		// ctx 取消视为截断，吞掉 err 并返回部分结果让调用方据 truncated 标注。
+		return 0, 0, true, nil //nolint:nilerr
 	}
 	entries, err := client.ReadDir(dir)
 	if err != nil {
@@ -433,7 +435,7 @@ func countRemoteDir(ctx context.Context, client interface {
 	var size int64
 	for _, entry := range entries {
 		if ctx.Err() != nil {
-			return count, size, true, nil
+			return count, size, true, nil //nolint:nilerr
 		}
 		count++
 		fullPath := pathpkg.Join(dir, entry.Name())

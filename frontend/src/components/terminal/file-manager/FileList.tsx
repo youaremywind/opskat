@@ -13,6 +13,40 @@ import {
   sortEntries,
 } from "./utils";
 
+interface RenameInputProps {
+  initialName: string;
+  onCommit: (name: string) => void;
+  onCancel: () => void;
+}
+
+function RenameInput({ initialName, onCommit, onCancel }: RenameInputProps) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [value, setValue] = useState(initialName);
+
+  useEffect(() => {
+    const input = inputRef.current;
+    if (!input) return;
+    const range = splitNameForRename(initialName);
+    input.focus();
+    input.setSelectionRange(0, range.stemLength);
+  }, [initialName]);
+
+  return (
+    <Input
+      ref={inputRef}
+      value={value}
+      className="h-5 flex-1 border-0 bg-background px-1 text-xs shadow-none focus-visible:ring-1"
+      onChange={(e) => setValue(e.target.value)}
+      onBlur={onCancel}
+      onClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") onCommit(value);
+        if (e.key === "Escape") onCancel();
+      }}
+    />
+  );
+}
+
 interface FileListProps {
   clipboardCutPaths: Set<string>;
   currentPath: string;
@@ -55,7 +89,6 @@ export function FileList({
     [currentPath, sortedEntries]
   );
   const lastClickedRef = useRef<number | null>(null);
-  const renameInputRef = useRef<HTMLInputElement>(null);
   const draggedPathsRef = useRef<string[]>([]);
   const pointerDragRef = useRef<{
     dragging: boolean;
@@ -66,23 +99,8 @@ export function FileList({
     startY: number;
   } | null>(null);
   const suppressNextClickRef = useRef(false);
-  const [renameValue, setRenameValue] = useState("");
   const [dropTargetPath, setDropTargetPath] = useState<string | null>(null);
   const slowClickRef = useRef<{ path: string; time: number; timer: number | null }>({ path: "", time: 0, timer: null });
-
-  useEffect(() => {
-    if (!renamePath) return;
-    const entry = sortedEntries.find((item) => getEntryPath(currentPath, item) === renamePath);
-    if (!entry) return;
-    setRenameValue(entry.name);
-    requestAnimationFrame(() => {
-      const input = renameInputRef.current;
-      if (!input) return;
-      const range = splitNameForRename(entry.name);
-      input.focus();
-      input.setSelectionRange(0, range.stemLength);
-    });
-  }, [currentPath, renamePath, sortedEntries]);
 
   const selectEntry = (path: string, index: number, event: React.MouseEvent) => {
     if (event.shiftKey && lastClickedRef.current !== null) {
@@ -124,14 +142,14 @@ export function FileList({
     lastClickedRef.current = index;
   };
 
-  const commitRename = () => {
+  const commitRename = (nextName: string) => {
     if (!renamePath) return;
-    const nextName = renameValue.trim();
-    if (!nextName) {
+    const trimmed = nextName.trim();
+    if (!trimmed) {
       onRenameCancel();
       return;
     }
-    onRenameCommit(renamePath, nextName);
+    onRenameCommit(renamePath, trimmed);
   };
 
   const isEntryTarget = (target: EventTarget | null) => {
@@ -352,17 +370,11 @@ export function FileList({
                     <File className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
                   )}
                   {isRenaming ? (
-                    <Input
-                      ref={renameInputRef}
-                      value={renameValue}
-                      className="h-5 flex-1 border-0 bg-background px-1 text-xs shadow-none focus-visible:ring-1"
-                      onChange={(e) => setRenameValue(e.target.value)}
-                      onBlur={onRenameCancel}
-                      onClick={(e) => e.stopPropagation()}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") commitRename();
-                        if (e.key === "Escape") onRenameCancel();
-                      }}
+                    <RenameInput
+                      key={fullPath}
+                      initialName={entry.name}
+                      onCommit={commitRename}
+                      onCancel={onRenameCancel}
                     />
                   ) : (
                     <span className="flex-1 truncate">{entry.name}</span>

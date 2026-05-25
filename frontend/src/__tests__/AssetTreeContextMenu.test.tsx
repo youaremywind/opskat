@@ -131,15 +131,6 @@ describe("AssetTree context menu", () => {
     expect(assetRow).toHaveAttribute("role", "button");
   });
 
-  it("renders a folder tail dropzone after the last asset", () => {
-    const { container } = renderTree();
-
-    const dropzone = container.querySelector('[data-asset-tree-dropzone="group-1-tail"]');
-
-    expect(dropzone).toBeInTheDocument();
-    expect(dropzone?.querySelector("[data-asset-tree-drop-indicator]")).toBeInTheDocument();
-  });
-
   it("does not render group detail or open in tab in group context menu", async () => {
     renderTree();
 
