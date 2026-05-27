@@ -39,6 +39,9 @@ vi.mock("../../wailsjs/go/serial/Serial", () => mockBinderModule("../../wailsjs/
 vi.mock("../../wailsjs/go/ai/AI", () => mockBinderModule("../../wailsjs/go/ai/AI"));
 vi.mock("../../wailsjs/go/opsctl/Opsctl", () => mockBinderModule("../../wailsjs/go/opsctl/Opsctl"));
 vi.mock("../../wailsjs/go/extension/Extension", () => mockBinderModule("../../wailsjs/go/extension/Extension"));
+vi.mock("../../wailsjs/go/external_edit/ExternalEdit", () =>
+  mockBinderModule("../../wailsjs/go/external_edit/ExternalEdit")
+);
 
 // Mock react-i18next
 vi.mock("react-i18next", () => ({
