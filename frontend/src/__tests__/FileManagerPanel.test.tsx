@@ -10,8 +10,12 @@ import { type ExternalEditMergePrepareResult, type ExternalEditSession } from ".
 import { ChangeSSHDirectory, SFTPListDir, SFTPRename } from "../../wailsjs/go/ssh/SSH";
 import { OpenExternalEdit, PrepareExternalEditMerge } from "../../wailsjs/go/external_edit/ExternalEdit";
 
-const { toastError } = vi.hoisted(() => ({
+const { toastError, toastSuccess } = vi.hoisted(() => ({
   toastError: vi.fn(),
+  toastSuccess: vi.fn(),
+}));
+const { clipboardWriteText } = vi.hoisted(() => ({
+  clipboardWriteText: vi.fn(),
 }));
 const { codeDiffViewerMock, codeEditorMountMock } = vi.hoisted(() => ({
   codeDiffViewerMock: vi.fn(),
@@ -24,7 +28,7 @@ const { prepareExternalEditMergeMock } = vi.hoisted(() => ({
 vi.mock("sonner", () => ({
   toast: {
     error: toastError,
-    success: vi.fn(),
+    success: toastSuccess,
   },
 }));
 
@@ -195,6 +199,13 @@ function createDragDataTransfer(): DataTransfer {
 describe("FileManagerPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    clipboardWriteText.mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: clipboardWriteText,
+      },
+    });
     vi.mocked(PrepareExternalEditMerge).mockResolvedValue(undefined as never);
     useTerminalStore.setState({
       tabData: {
@@ -252,6 +263,20 @@ describe("FileManagerPanel", () => {
     codeDiffViewerMock.mockClear();
     codeEditorMountMock.mockClear();
     vi.mocked(SFTPListDir).mockResolvedValue([]);
+  });
+
+  it("copies a file address from the file context menu", async () => {
+    vi.mocked(SFTPListDir).mockResolvedValue([{ name: "demo.txt", isDir: false, size: 12, modTime: 0 }]);
+
+    render(<FileManagerPanel tabId="tab1" sessionId="s1" isOpen width={280} onWidthChange={vi.fn()} />);
+
+    fireEvent.contextMenu(await screen.findByText("demo.txt"), { clientX: 24, clientY: 24 });
+    await screen.findByRole("button", { name: "sftp.menu.copyFilePath" });
+    await new Promise((resolve) => window.setTimeout(resolve, 175));
+    fireEvent.click(screen.getByRole("button", { name: "sftp.menu.copyFilePath" }));
+
+    await waitFor(() => expect(clipboardWriteText).toHaveBeenCalledWith("/srv/app/demo.txt"));
+    expect(toastSuccess).toHaveBeenCalledWith("sftp.filePathCopied");
   });
 
   it("syncs the file manager to the active terminal cwd", async () => {

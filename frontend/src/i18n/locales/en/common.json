@@ -1410,6 +1410,8 @@
     "selectedItems": "Selected {{count}} items ({{size}})",
     "clipboardCopy": "Clipboard: copy {{count}} item(s)",
     "clipboardCut": "Clipboard: cut {{count}} item(s)",
+    "currentPathCopied": "Current path copied",
+    "filePathCopied": "File path copied",
     "menu": {
       "openTerminal": "Open in Terminal",
       "downloadFolder": "Download Folder",
@@ -1419,6 +1421,8 @@
       "cutSelected": "Cut Selected ({{count}} items)",
       "copy": "Copy",
       "copySelected": "Copy Selected ({{count}} items)",
+      "copyFilePath": "Copy File Path",
+      "copySelectedFilePaths": "Copy Selected File Paths ({{count}} items)",
       "paste": "Paste",
       "rename": "Rename",
       "permission": "Permission",

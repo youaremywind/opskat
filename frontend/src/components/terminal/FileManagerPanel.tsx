@@ -309,6 +309,17 @@ export function FileManagerPanel({
     [entryByPath, selected, sessionId]
   );
 
+  const copyFilePaths = useCallback(
+    (paths: string[]) => {
+      if (!paths.length) return;
+      void navigator.clipboard
+        .writeText(paths.join("\n"))
+        .then(() => toast.success(t("sftp.filePathCopied")))
+        .catch((e) => toast.error(String(e)));
+    },
+    [t]
+  );
+
   const paste = useCallback(async () => {
     if (!clipboard?.items.length) return;
     try {
@@ -385,7 +396,7 @@ export function FileManagerPanel({
           acceptedResult?.primaryDraftSessionId === result.primaryDraftSessionId ? acceptedResult : null
         );
         return true;
-      } catch (error) {
+      } catch {
         const safeMessage = t(EXTERNAL_EDIT_SAFE_ERROR_KEY);
         setError(safeMessage);
         setMergePrepareErrors((current) => ({ ...current, [session.id]: safeMessage }));
@@ -409,7 +420,7 @@ export function FileManagerPanel({
     async (session: ExternalEditSession) => {
       try {
         await resolveConflict(session.id, "reread");
-      } catch (error) {
+      } catch {
         setError(t(EXTERNAL_EDIT_SAFE_ERROR_KEY));
       }
     },
@@ -420,7 +431,7 @@ export function FileManagerPanel({
     async (session: ExternalEditSession) => {
       try {
         await resolveConflict(session.id, session.state === "remote_missing" ? "recreate" : "overwrite");
-      } catch (error) {
+      } catch {
         setError(t(EXTERNAL_EDIT_SAFE_ERROR_KEY));
       }
     },
@@ -454,7 +465,7 @@ export function FileManagerPanel({
             );
           return latestAttentionItems.length > 0 || hasRuntimeItem;
         });
-      } catch (error) {
+      } catch {
         setError(t(EXTERNAL_EDIT_SAFE_ERROR_KEY));
       }
     },
@@ -571,13 +582,19 @@ export function FileManagerPanel({
         case "copySelected":
           copyOrCut("copy", multiPaths);
           break;
+        case "copyFilePath":
+          if (targetPath) copyFilePaths([targetPath]);
+          break;
+        case "copySelectedFilePaths":
+          copyFilePaths(multiPaths);
+          break;
         case "paste":
           void paste();
           break;
         case "copyCurrentPath":
           void navigator.clipboard
             .writeText(currentPathRef.current)
-            .then(() => toast.success("Current path copied"))
+            .then(() => toast.success(t("sftp.currentPathCopied")))
             .catch((e) => toast.error(String(e)));
           break;
         case "rename":
@@ -621,6 +638,7 @@ export function FileManagerPanel({
       ctxMenu,
       currentPath,
       currentPathRef,
+      copyFilePaths,
       copyOrCut,
       entryByPath,
       handleOpenExternalEdit,
@@ -638,6 +656,7 @@ export function FileManagerPanel({
       startUpload,
       startUploadDir,
       syncTerminalToPath,
+      t,
       transferTarget,
     ]
   );

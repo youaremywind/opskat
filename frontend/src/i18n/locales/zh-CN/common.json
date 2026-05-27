@@ -1410,6 +1410,8 @@
     "selectedItems": "已选择 {{count}} 项（{{size}}）",
     "clipboardCopy": "剪贴板：复制 {{count}} 项",
     "clipboardCut": "剪贴板：剪切 {{count}} 项",
+    "currentPathCopied": "当前路径已复制",
+    "filePathCopied": "文件地址已复制",
     "menu": {
       "openTerminal": "在终端中打开",
       "downloadFolder": "下载文件夹",
@@ -1419,6 +1421,8 @@
       "cutSelected": "剪切所选（{{count}} 项）",
       "copy": "复制",
       "copySelected": "复制所选（{{count}} 项）",
+      "copyFilePath": "复制文件地址",
+      "copySelectedFilePaths": "复制所选文件地址（{{count}} 项）",
       "paste": "粘贴",
       "rename": "重命名",
       "permission": "权限",
