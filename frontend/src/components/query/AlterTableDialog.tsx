@@ -16,6 +16,7 @@ import {
 import { ExecuteSQL } from "../../../wailsjs/go/query/Query";
 import { SqlPreviewDialog } from "./SqlPreviewDialog";
 import { toast } from "sonner";
+import { notifySuccess } from "@/lib/notify";
 import {
   buildAlterStatements,
   quoteIdent,
@@ -340,7 +341,7 @@ export function AlterTableDialog({
         await ExecuteSQL(assetId, sql, database);
       }
 
-      toast.success(t("query.alterTableSuccess"));
+      notifySuccess(t("query.alterTableSuccess"));
       setShowSqlPreview(false);
       onOpenChange(false);
       onSuccess(pendingNextTableName);

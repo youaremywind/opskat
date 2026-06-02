@@ -12,7 +12,7 @@ import { builtinThemes, defaultLightTheme, defaultDarkTheme } from "@/data/termi
 import { withTerminalFontFallback, withTerminalFontIsolation } from "@/data/terminalFonts";
 import { useResolvedTheme } from "@/components/theme-provider";
 import { useTranslation } from "react-i18next";
-import { toast } from "sonner";
+import { notifyCopied } from "@/lib/notify";
 import {
   ContextMenu,
   ContextMenuTrigger,
@@ -72,7 +72,7 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Termi
     const selection = termRef.current?.getSelection();
     if (selection) {
       navigator.clipboard.writeText(selection);
-      toast.success(t("ssh.contextMenu.copied"), { duration: 1500 });
+      notifyCopied(t("ssh.contextMenu.copied"));
     }
   }, [t]);
 
@@ -128,7 +128,7 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Termi
       const selection = inst.term.getSelection();
       if (selection) {
         navigator.clipboard.writeText(selection);
-        toast.success(t("ssh.contextMenu.copied"), { duration: 1500 });
+        notifyCopied(t("ssh.contextMenu.copied"));
         return true;
       }
       return false;

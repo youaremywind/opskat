@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { toast } from "sonner";
+import { notifySuccess } from "@/lib/notify";
 import { useTranslation } from "react-i18next";
 import { AlertCircle, Loader2, PlugZap, XCircle } from "lucide-react";
 import {
@@ -1019,7 +1020,7 @@ export function AssetForm({ open, onOpenChange, editAsset, defaultGroupId = 0 }:
     setTesting(true);
     try {
       await TestSSHConnection(testId, JSON.stringify(sshConfig), password);
-      if (activeTestIdRef.current === testId) toast.success(t("asset.testConnectionSuccess"));
+      if (activeTestIdRef.current === testId) notifySuccess(t("asset.testConnectionSuccess"));
     } catch (e) {
       if (activeTestIdRef.current === testId) toast.error(`${t("asset.testConnectionFailed")}: ${String(e)}`);
     } finally {
@@ -1051,7 +1052,7 @@ export function AssetForm({ open, onOpenChange, editAsset, defaultGroupId = 0 }:
     setTesting(true);
     try {
       await TestDatabaseConnection(testId, JSON.stringify(cfg), password);
-      if (activeTestIdRef.current === testId) toast.success(t("asset.testConnectionSuccess"));
+      if (activeTestIdRef.current === testId) notifySuccess(t("asset.testConnectionSuccess"));
     } catch (e) {
       if (activeTestIdRef.current === testId) toast.error(`${t("asset.testConnectionFailed")}: ${String(e)}`);
     } finally {
@@ -1082,7 +1083,7 @@ export function AssetForm({ open, onOpenChange, editAsset, defaultGroupId = 0 }:
     setTesting(true);
     try {
       await TestRedisConnection(testId, JSON.stringify(cfg), password);
-      if (activeTestIdRef.current === testId) toast.success(t("asset.testConnectionSuccess"));
+      if (activeTestIdRef.current === testId) notifySuccess(t("asset.testConnectionSuccess"));
     } catch (e) {
       if (activeTestIdRef.current === testId) toast.error(`${t("asset.testConnectionFailed")}: ${String(e)}`);
     } finally {
@@ -1119,7 +1120,7 @@ export function AssetForm({ open, onOpenChange, editAsset, defaultGroupId = 0 }:
     setTesting(true);
     try {
       await EtcdTestConfig(testId, JSON.stringify(cfg), password);
-      if (activeTestIdRef.current === testId) toast.success(t("asset.testConnectionSuccess"));
+      if (activeTestIdRef.current === testId) notifySuccess(t("asset.testConnectionSuccess"));
     } catch (e) {
       if (activeTestIdRef.current === testId) toast.error(`${t("asset.testConnectionFailed")}: ${String(e)}`);
     } finally {
@@ -1150,7 +1151,7 @@ export function AssetForm({ open, onOpenChange, editAsset, defaultGroupId = 0 }:
     setTesting(true);
     try {
       await TestMongoDBConnection(testId, JSON.stringify(cfg), password);
-      if (activeTestIdRef.current === testId) toast.success(t("asset.testConnectionSuccess"));
+      if (activeTestIdRef.current === testId) notifySuccess(t("asset.testConnectionSuccess"));
     } catch (e) {
       if (activeTestIdRef.current === testId) toast.error(`${t("asset.testConnectionFailed")}: ${String(e)}`);
     } finally {
@@ -1171,7 +1172,7 @@ export function AssetForm({ open, onOpenChange, editAsset, defaultGroupId = 0 }:
     setTesting(true);
     try {
       await TestKafkaConnection(testId, JSON.stringify(cfg), password);
-      if (activeTestIdRef.current === testId) toast.success(t("asset.testConnectionSuccess"));
+      if (activeTestIdRef.current === testId) notifySuccess(t("asset.testConnectionSuccess"));
     } catch (e) {
       if (activeTestIdRef.current === testId) toast.error(`${t("asset.testConnectionFailed")}: ${String(e)}`);
     } finally {
@@ -1211,7 +1212,7 @@ export function AssetForm({ open, onOpenChange, editAsset, defaultGroupId = 0 }:
     setTesting(true);
     try {
       await TestSerialConnection(testId, JSON.stringify(cfg));
-      if (activeTestIdRef.current === testId) toast.success(t("asset.testConnectionSuccess"));
+      if (activeTestIdRef.current === testId) notifySuccess(t("asset.testConnectionSuccess"));
     } catch (e) {
       if (activeTestIdRef.current === testId) toast.error(`${t("asset.testConnectionFailed")}: ${String(e)}`);
     } finally {

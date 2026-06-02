@@ -27,6 +27,7 @@ import {
 } from "@opskat/ui";
 import { FilePlus2, Link, Loader2, Play, Table2, Trash2 } from "lucide-react";
 import { toast } from "sonner";
+import { notifySuccess } from "@/lib/notify";
 import { ExecuteSQL } from "../../../wailsjs/go/query/Query";
 import {
   buildImportInsertSql,
@@ -482,7 +483,7 @@ export function ImportTableDataDialog({
           seconds: (performance.now() - startedAt) / 1000,
         });
         if (error === 0) {
-          toast.success(t("query.importSuccess", { affected: added + updated + deleted }));
+          notifySuccess(t("query.importSuccess", { affected: added + updated + deleted }));
           onOpenChange(false);
           onSuccess();
         } else {
@@ -529,7 +530,7 @@ export function ImportTableDataDialog({
           });
         }
         if (error === 0) {
-          toast.success(t("query.importSuccess", { affected: added }));
+          notifySuccess(t("query.importSuccess", { affected: added }));
           onOpenChange(false);
           onSuccess();
         } else {

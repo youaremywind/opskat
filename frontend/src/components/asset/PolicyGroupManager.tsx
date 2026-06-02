@@ -4,6 +4,7 @@ import { Lock, Copy, Trash2, Plus, Save, ChevronDown, ChevronRight, Puzzle } fro
 import { Dialog, DialogContent, DialogHeader, DialogTitle, Button, Input, Separator, ConfirmDialog } from "@opskat/ui";
 import { PolicyTagEditor } from "@/components/asset/PolicyTagEditor";
 import { toast } from "sonner";
+import { notifySuccess } from "@/lib/notify";
 import { ListPolicyGroups } from "../../../wailsjs/go/system/System";
 import {
   CreatePolicyGroup,
@@ -180,7 +181,7 @@ export function PolicyGroupManager({ open, onOpenChange, onGroupsChanged, initia
   const handleCopy = async (id: string) => {
     try {
       await CopyPolicyGroup(id, "");
-      toast.success(t("asset.policyGroup.copySuccess"));
+      notifySuccess(t("asset.policyGroup.copySuccess"));
       notifyChanged();
       await fetchGroups();
     } catch (e) {
@@ -191,7 +192,7 @@ export function PolicyGroupManager({ open, onOpenChange, onGroupsChanged, initia
   const handleDelete = async (id: string) => {
     try {
       await DeletePolicyGroup(id);
-      toast.success(t("asset.policyGroup.deleteSuccess"));
+      notifySuccess(t("asset.policyGroup.deleteSuccess"));
       if (editState?.id === id) setEditState(null);
       notifyChanged();
       await fetchGroups();
@@ -253,7 +254,7 @@ export function PolicyGroupManager({ open, onOpenChange, onGroupsChanged, initia
             policy: policyJSON,
           })
         );
-        toast.success(t("asset.policyGroup.saveSuccess"));
+        notifySuccess(t("asset.policyGroup.saveSuccess"));
       } else {
         await UpdatePolicyGroup(
           new policy_group_entity.PolicyGroup({
@@ -264,7 +265,7 @@ export function PolicyGroupManager({ open, onOpenChange, onGroupsChanged, initia
             policy: policyJSON,
           })
         );
-        toast.success(t("asset.policyGroup.saveSuccess"));
+        notifySuccess(t("asset.policyGroup.saveSuccess"));
       }
       setEditState(null);
       notifyChanged();

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties }
 import { useTranslation } from "react-i18next";
 import { AlertTriangle, Upload } from "lucide-react";
 import { toast } from "sonner";
+import { notifyCopied } from "@/lib/notify";
 import {
   Button,
   cn,
@@ -314,7 +315,7 @@ export function FileManagerPanel({
       if (!paths.length) return;
       void navigator.clipboard
         .writeText(paths.join("\n"))
-        .then(() => toast.success(t("sftp.filePathCopied")))
+        .then(() => notifyCopied(t("sftp.filePathCopied")))
         .catch((e) => toast.error(String(e)));
     },
     [t]
@@ -594,7 +595,7 @@ export function FileManagerPanel({
         case "copyCurrentPath":
           void navigator.clipboard
             .writeText(currentPathRef.current)
-            .then(() => toast.success(t("sftp.currentPathCopied")))
+            .then(() => notifyCopied(t("sftp.currentPathCopied")))
             .catch((e) => toast.error(String(e)));
           break;
         case "rename":

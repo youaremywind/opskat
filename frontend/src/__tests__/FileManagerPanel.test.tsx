@@ -276,7 +276,7 @@ describe("FileManagerPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "sftp.menu.copyFilePath" }));
 
     await waitFor(() => expect(clipboardWriteText).toHaveBeenCalledWith("/srv/app/demo.txt"));
-    expect(toastSuccess).toHaveBeenCalledWith("sftp.filePathCopied");
+    expect(toastSuccess).toHaveBeenCalledWith("sftp.filePathCopied", { position: "top-center", duration: 1000 });
   });
 
   it("syncs the file manager to the active terminal cwd", async () => {

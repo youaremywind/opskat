@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
+import { notifySuccess } from "@/lib/notify";
 import {
   ChevronRight,
   ChevronDown,
@@ -109,7 +110,7 @@ export function DatabaseTree({ tabId }: DatabaseTreeProps) {
     setExecutingAction(true);
     try {
       await ExecuteSQL(tabMeta.assetId, sql, database);
-      toast.success(t(type === "drop" ? "query.dropTableSuccess" : "query.truncateTableSuccess", { table }));
+      notifySuccess(t(type === "drop" ? "query.dropTableSuccess" : "query.truncateTableSuccess", { table }));
       if (type === "drop") {
         if (selected?.db === database && selected?.table === table) setSelected(null);
         await refreshTables(tabId, database);

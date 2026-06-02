@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
+import { notifyCopied, notifySuccess } from "@/lib/notify";
 import yaml from "js-yaml";
 import { Button } from "@opskat/ui";
 import { Copy, History, Loader2, Pencil, Save, Trash2, X } from "lucide-react";
@@ -298,7 +299,7 @@ export function EtcdKeyDetail({
   async function copyToClipboard(value: string) {
     try {
       await navigator.clipboard.writeText(value);
-      toast.success(t("etcd.detail.copied"));
+      notifyCopied(t("etcd.detail.copied"));
     } catch {
       toast.error(t("etcd.detail.copyFailed"));
     }
@@ -330,7 +331,7 @@ export function EtcdKeyDetail({
     setSaving(true);
     try {
       await exec(buildPutRequest(assetId, detail.key, editValue));
-      toast.success(t("etcd.detail.saveSuccess"));
+      notifySuccess(t("etcd.detail.saveSuccess"));
       setEditing(false);
       // 重新拉一遍 detail（revision 还是 0 / latest）
       const res = await exec(buildGetRequest(assetId, detail.key, 0));
@@ -355,7 +356,7 @@ export function EtcdKeyDetail({
     setDeleting(true);
     try {
       await exec(buildDelRequest(assetId, detail.key));
-      toast.success(t("etcd.detail.deleteSuccess", { key: detail.key }));
+      notifySuccess(t("etcd.detail.deleteSuccess", { key: detail.key }));
       onDeleted?.(detail.key);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

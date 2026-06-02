@@ -1,6 +1,7 @@
 import { useState, useMemo, useCallback, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
+import { notifySuccess } from "@/lib/notify";
 import {
   Download,
   Shield,
@@ -143,7 +144,7 @@ export function ExportDialog({ open, onOpenChange, mode, onGistExport, onWebDAVE
       } else {
         await ExportToFile(includeCredentials ? password : "", opts);
       }
-      toast.success(
+      notifySuccess(
         mode === "gist"
           ? t("backup.gistPushSuccess")
           : mode === "webdav"

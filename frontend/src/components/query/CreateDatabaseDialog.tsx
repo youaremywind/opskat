@@ -14,6 +14,7 @@ import {
 } from "@opskat/ui";
 import { ExecuteSQL } from "../../../wailsjs/go/query/Query";
 import { toast } from "sonner";
+import { notifySuccess } from "@/lib/notify";
 import { SqlPreviewDialog } from "./SqlPreviewDialog";
 import { quoteIdent, sqlQuote } from "@/lib/tableSql";
 
@@ -123,7 +124,7 @@ export function CreateDatabaseDialog({
       for (const sql of previewStatements) {
         await ExecuteSQL(assetId, sql, defaultDatabase);
       }
-      toast.success(t("query.createDatabaseSuccess", { database: pendingName }));
+      notifySuccess(t("query.createDatabaseSuccess", { database: pendingName }));
       setShowSqlPreview(false);
       onOpenChange(false);
       onSuccess();

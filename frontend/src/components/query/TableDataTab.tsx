@@ -31,6 +31,7 @@ import { ExportTableDataDialog } from "./ExportTableDataDialog";
 import { TableFilterBuilder } from "./TableFilterBuilder";
 import { TableDataStatusBar, TableEditorToolbar, type TableExportFormat } from "./TableEditorToolbar";
 import { toast } from "sonner";
+import { notifyCopied, notifySuccess } from "@/lib/notify";
 import { toInsertSql, toTsv, toTsvData, toTsvFields, toUpdateSql } from "@/lib/tableExport";
 import { buildInsertStatement, validateInsertRow, type TableColumnRule } from "@/lib/tableEdit";
 import {
@@ -536,7 +537,7 @@ function TableDataTabContent({ tabId, innerTabId, database, table }: TableDataTa
     setDialogMode(null);
 
     if (affectedTotal > 0) {
-      toast.success(t("query.updateSuccessAffected", { affected: affectedTotal }));
+      notifySuccess(t("query.updateSuccessAffected", { affected: affectedTotal }));
       setEdits(new Map());
       setNewRows([]);
       fetchData(page);
@@ -721,7 +722,7 @@ function TableDataTabContent({ tabId, innerTabId, database, table }: TableDataTa
       const result = await ExecuteSQL(assetId, deletePreview.statement, database);
       const parsed: SQLResult = JSON.parse(result);
       const affected = Number(parsed.affected_rows ?? 0);
-      toast.success(t("query.deleteRecordSuccess", { affected }));
+      notifySuccess(t("query.deleteRecordSuccess", { affected }));
       setDeletePreview(null);
       setEdits(new Map());
       setNewRows([]);
@@ -768,7 +769,7 @@ function TableDataTabContent({ tabId, innerTabId, database, table }: TableDataTa
         "tsv-fields-data": toTsv(activeColumns, activeRows),
       };
       await navigator.clipboard.writeText(contentByFormat[format]);
-      toast.success(t("query.copied"));
+      notifyCopied(t("query.copied"));
     },
     [columns, database, driver, primaryKeys, rows, table, t]
   );
@@ -946,7 +947,7 @@ function TableDataTabContent({ tabId, innerTabId, database, table }: TableDataTa
     const text = ddlLoading ? "" : ddlSQL;
     if (!text) return;
     await navigator.clipboard.writeText(text);
-    toast.success(t("query.copied"));
+    notifyCopied(t("query.copied"));
   }, [ddlLoading, ddlSQL, t]);
 
   // 提到顶层走 useCallback,使 QueryResultTable 的 memo 浅比较生效;

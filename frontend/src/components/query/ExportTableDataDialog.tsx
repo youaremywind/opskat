@@ -24,6 +24,7 @@ import {
 } from "@opskat/ui";
 import { Check, ChevronDown, Download, ExternalLink, FolderOpen, Loader2 } from "lucide-react";
 import { toast } from "sonner";
+import { notifySuccess } from "@/lib/notify";
 import { ExecuteSQL } from "../../../wailsjs/go/query/Query";
 import { OpenDirectory } from "../../../wailsjs/go/system/System";
 import { SelectTableExportFile, WriteTableExportFile } from "../../../wailsjs/go/query/Query";
@@ -312,7 +313,7 @@ export function ExportTableDataDialog({
       appendLog(`[EXP] Processed ${processedRows} row(s) in ${elapsed}s`);
       appendLog("[EXP] Finished successfully");
       setCompleted(true);
-      toast.success(t("query.exportSuccessDetailed", { count: processedRows }));
+      notifySuccess(t("query.exportSuccessDetailed", { count: processedRows }));
     } catch (e) {
       appendLog(`[EXP] Failed - ${String(e)}`);
       toast.error(String(e));
