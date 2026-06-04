@@ -63,6 +63,15 @@ describe("matchShortcut on macOS", () => {
     expect(matchShortcut(key({ code: "Digit1", metaKey: true, ctrlKey: true }), shortcuts)).toBe("tab.1");
     expect(matchShortcut(key({ code: "Digit1", metaKey: true }), shortcuts)).toBeNull();
   });
+
+  it("does not treat Ctrl as no modifier", async () => {
+    const { matchShortcut, DEFAULT_SHORTCUTS } = await importMac();
+    const shortcuts = {
+      ...DEFAULT_SHORTCUTS,
+      "tab.close": { code: "KeyW", mod: false, ctrl: false, shift: false, alt: false },
+    };
+    expect(matchShortcut(key({ code: "KeyW", ctrlKey: true }), shortcuts)).toBeNull();
+  });
 });
 
 describe("formatBinding on macOS", () => {

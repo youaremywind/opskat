@@ -79,7 +79,13 @@ export function ShortcutSettings() {
   const isCustomized = (action: ShortcutAction) => {
     const def = DEFAULT_SHORTCUTS[action];
     const cur = shortcuts[action];
-    return cur.code !== def.code || cur.mod !== def.mod || cur.shift !== def.shift || cur.alt !== def.alt;
+    return (
+      cur.code !== def.code ||
+      cur.mod !== def.mod ||
+      cur.ctrl !== def.ctrl ||
+      cur.shift !== def.shift ||
+      cur.alt !== def.alt
+    );
   };
 
   return (
