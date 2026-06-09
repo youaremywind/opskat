@@ -25,7 +25,7 @@ go test ./internal/ai/ -run TestName     # Single Go test
 make test-cover                          # Coverage HTML
 cd frontend && pnpm test                 # Frontend (vitest)
 cd frontend && pnpm test:watch
-make test-fixtures && make test-e2e      # E2E (needs ../extensions sibling)
+make test-e2e                            # GUI e2e: Playwright drives the real Wails app
 
 # Lint
 make lint / make lint-fix                # golangci-lint
@@ -37,7 +37,7 @@ make build-devserver-ui                  # Rebuild embedded devserver UI
 make install-skill                       # Register opsctl plugin marketplace
 ```
 
-> **Feature verification & debugging**: how to run and verify a feature, read the logs (`logs/opskat.log`) and database (`opskat.db`, e.g. `audit_logs`) to aid diagnosis, and run headless functional tests with `opsctl` — see [docs/testing-debugging-guide.md](testing-debugging-guide.md) (written for agents like Claude/Codex, in English).
+> **Feature verification & debugging**: how to run and verify a feature, read the logs (`logs/opskat.log`) and database (`opskat.db`, e.g. `audit_logs`) to aid diagnosis, and run headless functional tests with `opsctl` — see [docs/testing-debugging-guide.md](testing-debugging-guide.md) (written for agents like Claude/Codex, in English). For driving the **real GUI end-to-end** (Playwright × Wails) — both the committed suite and throwaway per-feature verification — see [docs/e2e-harness-guide.md](e2e-harness-guide.md).
 
 ## Architecture
 
@@ -99,7 +99,7 @@ Common emoji (aligned with the changelog categories in [`/release`](../.claude/s
 
 ### Others
 
-- **CI:** runs Go lint/tests and frontend lint/tests/build on PRs and pushes to `main`/`develop`.
+- **CI:** runs Go lint/tests, the GUI e2e suite (`make test-e2e` under `xvfb` on Linux — see [e2e-harness-guide.md](e2e-harness-guide.md)), and frontend lint/tests on PRs and pushes to `main`/`develop`.
 - **Go:** mocks in `mock_*/` (`go.uber.org/mock`, regen `go generate ./...`); tests use goconvey + testify. Service tests mock transaction boundaries — when code uses `dbutil.WithTransaction`, prefer `dbutil.WithTransactionRunner` over opening in-memory SQLite.
 - **Frontend:** Prettier 120 col, 2-space.
 - **Versioning:** version info is embedded with ldflags.
