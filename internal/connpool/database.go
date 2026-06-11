@@ -7,32 +7,56 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"strings"
+	"sync/atomic"
 
 	"github.com/opskat/opskat/internal/model/entity/asset_entity"
 	"github.com/opskat/opskat/internal/sshpool"
 
 	"github.com/cago-frame/cago/pkg/logger"
+	_ "github.com/glebarez/go-sqlite" // SQLite driver（与 cago bootstrap 同源，避免 sql.Register 重复 panic）
 	"github.com/go-sql-driver/mysql"
 	_ "github.com/jackc/pgx/v5/stdlib" // PostgreSQL driver
+	mssql "github.com/microsoft/go-mssqldb"
+	"github.com/microsoft/go-mssqldb/msdsn"
 	"go.uber.org/zap"
 )
 
-// DialDatabase 创建数据库连接（直连或通过 SSH 隧道）
-// password 为已解析的明文密码，由调用方负责解密
+// DialDatabase 创建数据库连接（直连、SSH 隧道或 SOCKS5 代理,隧道优先）
+// password 为已解析的明文密码，cfg.Proxy.Password 为明文,均由调用方负责解密
 func DialDatabase(ctx context.Context, asset *asset_entity.Asset, cfg *asset_entity.DatabaseConfig, password string, sshPool *sshpool.Pool) (*sql.DB, io.Closer, error) {
 
 	var db *sql.DB
 	var tunnel *SSHTunnel
 	var err error
 
+	if cfg.Driver == asset_entity.DriverSQLite {
+		// SQLite 本地文件,不走隧道。只读已在 buildDSN 里通过 _pragma=query_only(1)
+		// 写进 DSN（对每条连接生效），这里无需再单独 setReadOnly。
+		db, err = openDirect(cfg, password)
+		if err != nil {
+			return nil, nil, err
+		}
+		if pingErr := db.PingContext(ctx); pingErr != nil {
+			if cerr := db.Close(); cerr != nil {
+				logger.Default().Warn("close db", zap.Error(cerr))
+			}
+			return nil, nil, fmt.Errorf("数据库连接失败: %w", pingErr)
+		}
+		return db, nil, nil
+	}
+
 	tunnelID := asset.SSHTunnelID
 	if tunnelID == 0 {
 		tunnelID = cfg.SSHAssetID // backward compat
 	}
-	if tunnelID > 0 && sshPool != nil {
+	switch {
+	case tunnelID > 0 && sshPool != nil:
 		tunnel = NewSSHTunnel(tunnelID, cfg.Host, cfg.Port, sshPool)
-		db, err = openWithTunnel(cfg, password, tunnel)
-	} else {
+		db, err = openWithDialer(cfg, password, tunnelDialFunc(tunnel))
+	case cfg.Proxy != nil:
+		db, err = openWithDialer(cfg, password, proxyDialFunc(cfg.Proxy))
+	default:
 		db, err = openDirect(cfg, password)
 	}
 	if err != nil {
@@ -85,26 +109,37 @@ func openDirect(cfg *asset_entity.DatabaseConfig, password string) (*sql.DB, err
 	return sql.Open(driverName, dsn)
 }
 
-func openWithTunnel(cfg *asset_entity.DatabaseConfig, password string, tunnel *SSHTunnel) (*sql.DB, error) {
+func openWithDialer(cfg *asset_entity.DatabaseConfig, password string, dial dialContextFunc) (*sql.DB, error) {
 	switch cfg.Driver {
 	case asset_entity.DriverMySQL:
-		return openMySQLWithTunnel(cfg, password, tunnel)
+		return openMySQLWithDialer(cfg, password, dial)
 	case asset_entity.DriverPostgreSQL:
-		return openPgWithTunnel(cfg, password, tunnel)
+		return openPgWithDialer(cfg, password, dial)
+	case asset_entity.DriverMSSQL:
+		return openMSSQLWithDialer(cfg, password, dial)
 	default:
 		return nil, fmt.Errorf("不支持的数据库驱动: %s", cfg.Driver)
 	}
 }
 
-func openMySQLWithTunnel(cfg *asset_entity.DatabaseConfig, password string, tunnel *SSHTunnel) (*sql.DB, error) {
-	dialer := fmt.Sprintf("ssh-tunnel-%d", cfg.SSHAssetID)
-	mysql.RegisterDialContext(dialer, func(ctx context.Context, addr string) (net.Conn, error) {
-		return tunnel.Dial(ctx)
+// mysqlDialerSeq 为 mysql 自定义 dialer 生成唯一注册名。
+// mysql.RegisterDialContext 的注册表是全局的且同名覆盖,若名字复用,
+// 后注册者会劫持先前连接池的重拨,因此每次 open 都用独立的名字。
+var mysqlDialerSeq atomic.Int64
+
+func registerMySQLDialer(dial dialContextFunc) string {
+	name := fmt.Sprintf("opskat-dialer-%d", mysqlDialerSeq.Add(1))
+	mysql.RegisterDialContext(name, func(ctx context.Context, addr string) (net.Conn, error) {
+		return dial(ctx, addr)
 	})
+	return name
+}
+
+func openMySQLWithDialer(cfg *asset_entity.DatabaseConfig, password string, dial dialContextFunc) (*sql.DB, error) {
 	mysqlCfg := mysql.NewConfig()
 	mysqlCfg.User = cfg.Username
 	mysqlCfg.Passwd = password
-	mysqlCfg.Net = dialer
+	mysqlCfg.Net = registerMySQLDialer(dial)
 	mysqlCfg.Addr = fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
 	mysqlCfg.DBName = cfg.Database
 	if cfg.TLS {
@@ -116,12 +151,30 @@ func openMySQLWithTunnel(cfg *asset_entity.DatabaseConfig, password string, tunn
 	return sql.Open("mysql", mysqlCfg.FormatDSN())
 }
 
-func openPgWithTunnel(cfg *asset_entity.DatabaseConfig, password string, tunnel *SSHTunnel) (*sql.DB, error) {
-	// pgx 支持通过 DialFunc 自定义连接方式
+func openPgWithDialer(cfg *asset_entity.DatabaseConfig, password string, dial dialContextFunc) (*sql.DB, error) {
+	// pgx 支持通过 DialFunc 自定义连接方式,使用 connector API
 	_, dsn := buildDSN(cfg, password)
-	// 对于隧道模式，使用 pgx 的 connector API
-	db := sql.OpenDB(newPgTunnelConnector(dsn, tunnel))
+	db := sql.OpenDB(newPgDialConnector(dsn, dial))
 	return db, nil
+}
+
+func openMSSQLWithDialer(cfg *asset_entity.DatabaseConfig, password string, dial dialContextFunc) (*sql.DB, error) {
+	_, dsn := buildDSN(cfg, password)
+	msdsnCfg, err := msdsn.Parse(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("parse mssql dsn: %w", err)
+	}
+	connector := mssql.NewConnectorConfig(msdsnCfg)
+	connector.Dialer = mssqlDialerFunc(func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return dial(ctx, addr)
+	})
+	return sql.OpenDB(connector), nil
+}
+
+type mssqlDialerFunc func(ctx context.Context, network, addr string) (net.Conn, error)
+
+func (f mssqlDialerFunc) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	return f(ctx, network, addr)
 }
 
 func buildDSN(cfg *asset_entity.DatabaseConfig, password string) (driverName string, dsn string) {
@@ -152,6 +205,44 @@ func buildDSN(cfg *asset_entity.DatabaseConfig, password string) (driverName str
 			dsn += "&" + cfg.Params
 		}
 		return "pgx", dsn
+	case asset_entity.DriverMSSQL:
+		q := url.Values{}
+		if cfg.Database != "" {
+			q.Set("database", cfg.Database)
+		}
+		if cfg.TLS {
+			q.Set("encrypt", "true")
+			q.Set("trustservercertificate", "true")
+		} else {
+			q.Set("encrypt", "disable")
+		}
+		if cfg.Params != "" {
+			for k, v := range parseParams(cfg.Params) {
+				q.Set(k, v)
+			}
+		}
+		u := &url.URL{
+			Scheme:   "sqlserver",
+			User:     url.UserPassword(cfg.Username, password),
+			Host:     fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
+			RawQuery: q.Encode(),
+		}
+		return "sqlserver", u.String()
+	case asset_entity.DriverSQLite:
+		dsn := "file:" + cfg.Path
+		var query []string
+		if cfg.Params != "" {
+			query = append(query, cfg.Params)
+		}
+		// 只读用 _pragma 写进 DSN，保证连接池里"每一条"新建连接都带 query_only，
+		// 而不是只在初次 dial 用过的那一条上设 PRAGMA（那样池里别的连接仍可写）。
+		if cfg.ReadOnly {
+			query = append(query, "_pragma=query_only(1)")
+		}
+		if len(query) > 0 {
+			dsn += "?" + strings.Join(query, "&")
+		}
+		return "sqlite", dsn
 	default:
 		return "", ""
 	}
@@ -165,6 +256,9 @@ func setReadOnly(ctx context.Context, db *sql.DB, driver asset_entity.DatabaseDr
 	case asset_entity.DriverPostgreSQL:
 		_, err := db.ExecContext(ctx, "SET default_transaction_read_only = on")
 		return err
+	case asset_entity.DriverMSSQL:
+		logger.Ctx(ctx).Info("MSSQL connection-level read-only not supported, relying on policy")
+		return nil
 	}
 	return nil
 }

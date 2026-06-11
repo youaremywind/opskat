@@ -512,7 +512,7 @@ export function AssetTree({
   if (collapsed) return null;
 
   return (
-    <div className="flex h-full w-full flex-col border-r border-panel-divider bg-sidebar">
+    <div data-testid="asset-tree" className="flex h-full w-full flex-col border-r border-panel-divider bg-sidebar">
       {/* Drag region for frameless window */}
       <div
         className={`${isFullscreen ? "h-0" : "h-8"} w-full shrink-0`}
@@ -559,6 +559,7 @@ export function AssetTree({
                   className="h-6 w-6"
                   onClick={() => onAddAsset()}
                   aria-label={t("asset.addAsset")}
+                  data-testid="add-asset-button"
                 >
                   <Plus className="h-3.5 w-3.5" />
                 </Button>
@@ -752,6 +753,7 @@ export function AssetTree({
         description={t("asset.deleteAssetDesc", { name: deleteAssetConfirm?.Name })}
         cancelText={t("action.cancel")}
         confirmText={t("action.delete")}
+        confirmTestId="confirm-delete-asset"
         onConfirm={() => {
           if (deleteAssetConfirm) {
             deleteAsset(deleteAssetConfirm.ID);
@@ -823,8 +825,18 @@ function GroupContextMenuContent({
   );
 }
 
-function DynamicIcon({ icon, className, style }: { icon?: string; className?: string; style?: React.CSSProperties }) {
-  return React.createElement(icon ? getIconComponent(icon) : Folder, { className, style });
+function DynamicIcon({
+  icon,
+  fallback = Folder,
+  className,
+  style,
+}: {
+  icon?: string;
+  fallback?: React.ComponentType<{ className?: string; style?: React.CSSProperties }>;
+  className?: string;
+  style?: React.CSSProperties;
+}) {
+  return React.createElement(icon ? getIconComponent(icon) : fallback, { className, style });
 }
 
 function AssetDragPreview({ asset, active }: { asset: asset_entity.Asset; active: boolean }) {
@@ -1083,7 +1095,6 @@ const AssetRowContent = React.memo(function AssetRowContent({
   onOpenInfoTab,
   t,
 }: AssetRowProps) {
-  const AssetIcon = asset.Icon ? getIconComponent(asset.Icon) : Server;
   const isConnecting = connectingAssetIds.has(asset.ID);
   const style: React.CSSProperties = {
     paddingLeft: `${20 + (depth + 1) * 12}px`,
@@ -1111,7 +1122,9 @@ const AssetRowContent = React.memo(function AssetRowContent({
           {isConnecting ? (
             <Loader2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground animate-spin" />
           ) : (
-            <AssetIcon
+            <DynamicIcon
+              icon={asset.Icon || undefined}
+              fallback={Server}
               className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
               style={asset.Icon ? { color: getIconColor(asset.Icon) } : undefined}
             />
@@ -1137,7 +1150,7 @@ const AssetRowContent = React.memo(function AssetRowContent({
             {t("asset.connectInNewTab")}
           </ContextMenuItem>
         )}
-        {asset.Type === "ssh" && onOpenFileManager && (
+        {getAssetType(asset.Type)?.canOpenFileManager && onOpenFileManager && (
           <ContextMenuItem onClick={() => onOpenFileManager(asset)}>
             <FolderOpen className="h-3.5 w-3.5 mr-1.5" />
             {t("sftp.fileManager")}
@@ -1149,7 +1162,7 @@ const AssetRowContent = React.memo(function AssetRowContent({
             {t("action.editPermission")}
           </ContextMenuItem>
         )}
-        <ContextMenuItem onClick={() => onEditAsset(asset)}>
+        <ContextMenuItem data-testid="asset-context-edit" onClick={() => onEditAsset(asset)}>
           <Pencil className="h-3.5 w-3.5 mr-1.5" />
           {t("action.edit")}
         </ContextMenuItem>
@@ -1171,7 +1184,11 @@ const AssetRowContent = React.memo(function AssetRowContent({
           {t("asset.moveTop")}
         </ContextMenuItem>
         <ContextMenuSeparator />
-        <ContextMenuItem className="text-destructive" onClick={() => onDeleteAsset(asset)}>
+        <ContextMenuItem
+          data-testid="asset-context-delete"
+          className="text-destructive"
+          onClick={() => onDeleteAsset(asset)}
+        >
           <Trash2 className="h-3.5 w-3.5 mr-1.5" />
           {t("action.delete")}
         </ContextMenuItem>

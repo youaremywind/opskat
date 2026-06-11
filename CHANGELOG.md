@@ -1,3 +1,53 @@
+<a name="1.8.0"></a>
+
+## 1.8.0 (2026-06-04)
+
+本次版本新增本地终端资产（local），可在应用内直接打开本机 shell / PowerShell / WSL 终端并支持分屏；资产类型选择器升级为带图标、分组与搜索的下拉并统一类型清单；macOS 快捷键新增 Ctrl 支持与 ⌘⇄⌃ 一键切换；同时更新了 macOS/Windows 应用图标，并将复制等成功提示移到顶部居中。
+
+### 🚀 主要新功能
+
+- 💥 新增本地终端资产 (local)：在应用内直接打开本机 shell / PowerShell / WSL 终端，支持分屏（新开同配置 shell）并隐藏 Windows 终端黑窗 [#70](https://github.com/opskat/opskat/issues/70) ([#140](https://github.com/opskat/opskat/pull/140)) (by @CodFrm)
+- ✨ 资产类型选择器升级为图标 + 分组 + 搜索的下拉，统一类型清单 ([#142](https://github.com/opskat/opskat/pull/142)) (by @CodFrm)
+- ✨ macOS 快捷键支持 Ctrl，并提供 ⌘⇄⌃ 一键切换 [#138](https://github.com/opskat/opskat/issues/138) ([#139](https://github.com/opskat/opskat/pull/139)) (by @CodFrm)
+
+### 🐛 Bug 修复
+
+- 🐛 修复资产类型过滤下拉滚动高度 (by @CodFrm)
+
+### 🎨 UI 改进
+
+- 🎨 更新 macOS / Windows 应用图标（Windows 图标填满图块） [#134](https://github.com/opskat/opskat/issues/134) (by @CodFrm)
+- 🎨 复制等成功提示移到顶部居中并缩短停留时间 [#135](https://github.com/opskat/opskat/issues/135) (by @CodFrm)
+
+<a name="1.7.0"></a>
+
+## 1.7.0 (2026-05-30)
+
+本次版本新增 etcd 资产管理、SQL Server / SQLite 数据库资产，以及远程文件 external edit 全链路（含三方 merge 工作台）三大功能；SFTP 文件管理器大幅增强；优化资产树拖拽性能；并修复启动首页偏好、终端 PTY 尺寸、命令面板溢出、WebGL 字体渲染等问题。
+
+### 🚀 主要新功能
+
+- 💥 接入 etcd 资产管理：新增 etcd 资产类型、连接池与内置权限策略，支持 KV 浏览/查询/详情编辑与集群信息，接入 AI 工具链 [#122](https://github.com/opskat/opskat/issues/122) ([#129](https://github.com/opskat/opskat/pull/129)) (by @CodFrm)
+- 💥 新增 SQL Server 与 SQLite 数据库资产：MSSQL 纯 Go 驱动支持直连 + SSH 隧道，SQLite 本地文件直连，查询面板方言/分页/只读拦截完整适配 [#120](https://github.com/opskat/opskat/issues/120) ([#128](https://github.com/opskat/opskat/pull/128)) (by @CodFrm)
+- 💥 新增远程文件 external edit 全链路：远端文件拉起为本地副本持续编辑、自动回写，含三方 merge 工作台、pending 决策收口与重启恢复 ([#112](https://github.com/opskat/opskat/pull/112)) (by @2849236173)
+- ✨ SFTP 文件管理器增强：新建文件/文件夹、重命名、剪切/复制/粘贴、多选下载/删除、拖拽移动、属性弹窗与权限/属主编辑（chmod/chown，可递归） ([#124](https://github.com/opskat/opskat/pull/124)) (by @youaremywind)
+- ✨ SFTP 文件管理新增"复制文件路径"菜单项 ([#131](https://github.com/opskat/opskat/pull/131)) (by @youaremywind)
+
+### ⚡️ 性能优化
+
+- ⚡️ 优化资产树拖拽性能与单击响应延迟（拖动时 AssetRow 重渲染从 ~34/move 降到 ~0.68/move） (by @CodFrm)
+
+### 🐛 Bug 修复
+
+- 🐛 修复启动首页偏好失效 [#132](https://github.com/opskat/opskat/issues/132) ([#133](https://github.com/opskat/opskat/pull/133)) (by @CodFrm)
+- 🐛 修复 SSH 终端初次挂载未同步 PTY 尺寸导致 vi 等全屏程序只显示一半 [#125](https://github.com/opskat/opskat/issues/125) (by @CodFrm)
+- 🐛 修复命令面板内容过多时溢出弹层 [#126](https://github.com/opskat/opskat/issues/126) (by @CodFrm)
+- 🐛 修复终端 WebGL 字体渲染异常 (by @CodFrm)
+
+### ♻️ 重构与兼容性
+
+- ♻️ opsctl cp 跳过审批，仅保留审计 (by @CodFrm)
+
 <a name="1.6.2"></a>
 
 ## 1.6.2 (2026-05-18)

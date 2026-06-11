@@ -4,11 +4,17 @@ package ssh
 import (
 	"context"
 	"sync"
-	"sync/atomic"
 
+	"github.com/opskat/opskat/internal/model/entity/asset_entity"
+	"github.com/opskat/opskat/internal/pkg/transfer"
+	"github.com/opskat/opskat/internal/service/conntest"
+	"github.com/opskat/opskat/internal/service/sessionid"
 	"github.com/opskat/opskat/internal/service/sftp_svc"
 	"github.com/opskat/opskat/internal/service/ssh_svc"
+	"github.com/opskat/opskat/internal/service/zmodem_svc"
 	"github.com/opskat/opskat/internal/sshpool"
+
+	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // LangProvider 由 system binder 实现，提供当前 UI 语言。
@@ -40,10 +46,11 @@ type SSH struct {
 
 	manager        *ssh_svc.Manager
 	sftp           *sftp_svc.Service
+	zmodem         *zmodem_svc.FileBridge
 	pool           *sshpool.Pool
 	forwardManager *ForwardManager
 
-	connCounter atomic.Int64
+	connIDGen *sessionid.Generator
 
 	pendingAuthResponses    sync.Map // map[string]chan []string
 	pendingHostKeyResponses sync.Map // map[string]chan ssh_svc.HostKeyAction
@@ -53,14 +60,27 @@ type SSH struct {
 // New 构造 ssh binder。manager/sftp/pool 由 main.go 创建后注入。
 func New(appCtx context.Context, lang LangProvider, mgr *ssh_svc.Manager, sftp *sftp_svc.Service, pool *sshpool.Pool) *SSH {
 	s := &SSH{
-		appCtx:  appCtx,
-		lang:    lang,
-		manager: mgr,
-		sftp:    sftp,
-		pool:    pool,
+		appCtx:    appCtx,
+		lang:      lang,
+		manager:   mgr,
+		sftp:      sftp,
+		pool:      pool,
+		connIDGen: sessionid.NewGenerator("conn"),
 	}
+	// ZMODEM 文件桥的进度复用 SFTP 同一套 "transfer:progress:<id>" 事件管线。
+	// emit 在调用时才读 s.ctx（Startup 注入），传输总发生在 Startup 之后，故安全。
+	s.zmodem = zmodem_svc.New(func(p transfer.Progress) {
+		wailsRuntime.EventsEmit(s.ctx, "transfer:progress:"+p.TransferID, p)
+	})
 	s.forwardManager = NewForwardManager(&poolDialer{})
+	conntest.Register(asset_entity.AssetTypeSSH, s.testConnection)
 	return s
+}
+
+// nextConnectionID 生成跨重启唯一的连接中转 ID(连接中阶段的 tab id),
+// 避免与持久化的旧 connecting tab 撞号(issue #141)。
+func (s *SSH) nextConnectionID() string {
+	return s.connIDGen.Next()
 }
 
 // Startup 保存 Wails ctx，方便 EventsEmit 用。

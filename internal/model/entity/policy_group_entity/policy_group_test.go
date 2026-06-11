@@ -1,6 +1,7 @@
 package policy_group_entity
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/opskat/opskat/internal/model/entity/policy"
@@ -42,6 +43,55 @@ func TestPolicyGroup_Validate(t *testing.T) {
 			assert.NoError(t, err)
 		})
 	})
+}
+
+func TestIsBuiltinKind(t *testing.T) {
+	convey.Convey("isBuiltinKind 从注册数据派生合法 kind", t, func() {
+		convey.Convey("已注册的 6 个内置 kind 均为真", func() {
+			for _, k := range []string{
+				PolicyTypeCommand, PolicyTypeQuery, PolicyTypeRedis,
+				PolicyTypeMongo, PolicyTypeKafka, PolicyTypeEtcd,
+			} {
+				assert.True(t, isBuiltinKind(k), "kind %s 应为已注册内置 kind", k)
+			}
+		})
+		convey.Convey("未注册 kind 为假", func() {
+			assert.False(t, isBuiltinKind("unknown"))
+			assert.False(t, isBuiltinKind(""))
+		})
+	})
+}
+
+func TestBuiltinGroups_DerivesOrderFromRegistration(t *testing.T) {
+	// 守护:经 registerBuiltinGroups 注册的 kind 必须自动出现在 BuiltinGroups(),
+	// 不依赖手维护的 builtinKindOrder —— 否则新增 kind 只注册数据却漏改顺序表时,
+	// 其内置组会被静默丢弃(isBuiltinKind/Validate 放行,但 BuiltinGroups 不返回、
+	// builtinMap 缓存不到、FindBuiltin 取 nil),与"一处注册"的 OCP 目标相悖。
+	const testKind = "__synthetic_test_kind__"
+
+	origOrder := builtinKindOrder
+	t.Cleanup(func() {
+		delete(builtinGroupsByKind, testKind)
+		builtinKindOrder = origOrder
+	})
+
+	registerBuiltinGroups(testKind, &PolicyGroup{
+		BuiltinID:  policy.BuiltinPrefix + "synthetic-test",
+		Name:       "synthetic",
+		PolicyType: testKind,
+		Policy:     "{}",
+	})
+
+	assert.True(t, isBuiltinKind(testKind), "注册后应被 isBuiltinKind 认可")
+
+	var found bool
+	for _, g := range BuiltinGroups() {
+		if g.PolicyType == testKind {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "经 registerBuiltinGroups 注册的 kind 应出现在 BuiltinGroups(),不应被顺序表静默丢弃")
 }
 
 func TestPolicyGroup_ToItem(t *testing.T) {
@@ -119,9 +169,10 @@ func TestFindBuiltin(t *testing.T) {
 func TestBuiltinGroups(t *testing.T) {
 	convey.Convey("BuiltinGroups内置权限组列表", t, func() {
 		groups := BuiltinGroups()
+		counts := countBuiltinGroupsByPolicyType(groups)
 
-		convey.Convey("共返回19个内置组", func() {
-			assert.Len(t, groups, 19)
+		convey.Convey("共返回21个内置组", func() {
+			assert.Len(t, groups, 21)
 		})
 
 		convey.Convey("所有内置组ID均以builtin:开头", func() {
@@ -131,55 +182,72 @@ func TestBuiltinGroups(t *testing.T) {
 		})
 
 		convey.Convey("command类型内置组有5个", func() {
-			var count int
-			for _, g := range groups {
-				if g.PolicyType == PolicyTypeCommand {
-					count++
-				}
-			}
-			assert.Equal(t, 5, count)
+			assert.Equal(t, 5, counts[PolicyTypeCommand])
 		})
 
 		convey.Convey("query类型内置组有2个", func() {
-			var count int
-			for _, g := range groups {
-				if g.PolicyType == PolicyTypeQuery {
-					count++
-				}
-			}
-			assert.Equal(t, 2, count)
+			assert.Equal(t, 2, counts[PolicyTypeQuery])
 		})
 
 		convey.Convey("redis类型内置组有2个", func() {
-			var count int
-			for _, g := range groups {
-				if g.PolicyType == PolicyTypeRedis {
-					count++
-				}
-			}
-			assert.Equal(t, 2, count)
+			assert.Equal(t, 2, counts[PolicyTypeRedis])
 		})
 
 		convey.Convey("mongo类型内置组有3个", func() {
-			var count int
-			for _, g := range groups {
-				if g.PolicyType == PolicyTypeMongo {
-					count++
-				}
-			}
-			assert.Equal(t, 3, count)
+			assert.Equal(t, 3, counts[PolicyTypeMongo])
 		})
 
 		convey.Convey("kafka类型内置组有7个", func() {
-			var count int
-			for _, g := range groups {
-				if g.PolicyType == PolicyTypeKafka {
-					count++
-				}
-			}
-			assert.Equal(t, 7, count)
+			assert.Equal(t, 7, counts[PolicyTypeKafka])
 			assert.NotNil(t, FindBuiltin(policy.BuiltinKafkaMetadataReadOnly))
 			assert.NotNil(t, FindBuiltin(policy.BuiltinKafkaDangerousDeny))
 		})
+
+		convey.Convey("etcd类型内置组有2个", func() {
+			assert.Equal(t, 2, counts[PolicyTypeEtcd])
+		})
 	})
+}
+
+func countBuiltinGroupsByPolicyType(groups []*PolicyGroup) map[string]int {
+	counts := make(map[string]int)
+	for _, g := range groups {
+		counts[g.PolicyType]++
+	}
+	return counts
+}
+
+func TestBuiltinGroups_Etcd(t *testing.T) {
+	groups := BuiltinGroups()
+	var readOnly, deny *PolicyGroup
+	for _, g := range groups {
+		switch g.BuiltinID {
+		case policy.BuiltinEtcdReadOnly:
+			readOnly = g
+		case policy.BuiltinEtcdDangerousDeny:
+			deny = g
+		}
+	}
+	assert.NotNil(t, readOnly, "etcd read-only builtin group missing")
+	assert.NotNil(t, deny, "etcd dangerous-deny builtin group missing")
+	assert.Equal(t, PolicyTypeEtcd, readOnly.PolicyType)
+	assert.Equal(t, PolicyTypeEtcd, deny.PolicyType)
+
+	var pRO policy.EtcdPolicy
+	assert.NoError(t, json.Unmarshal([]byte(readOnly.Policy), &pRO))
+	assert.Contains(t, pRO.AllowList, "get *")
+
+	var pDeny policy.EtcdPolicy
+	assert.NoError(t, json.Unmarshal([]byte(deny.Policy), &pDeny))
+	assert.Contains(t, pDeny.DenyList, "member remove *")
+}
+
+func TestPolicyGroup_ValidateEtcdType(t *testing.T) {
+	pg := &PolicyGroup{Name: "test etcd group", PolicyType: PolicyTypeEtcd, Policy: "{}"}
+	assert.NoError(t, pg.Validate())
+}
+
+func TestPolicyGroup_FindBuiltinEtcd(t *testing.T) {
+	assert.NotNil(t, FindBuiltin(policy.BuiltinEtcdReadOnly))
+	assert.NotNil(t, FindBuiltin(policy.BuiltinEtcdDangerousDeny))
 }

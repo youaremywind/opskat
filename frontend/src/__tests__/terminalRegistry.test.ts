@@ -3,6 +3,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const hoisted = vi.hoisted(() => {
   const eventHandlers = new Map<string, (...args: unknown[]) => void>();
   const writeSpy = vi.fn();
+  const pasteSpy = vi.fn();
+  const clipboardGetTextSpy = vi.fn();
   const disposeSpy = vi.fn();
   const reconnectBySessionMock = vi.fn();
   const terminalCtor = vi.fn();
@@ -11,15 +13,31 @@ const hoisted = vi.hoisted(() => {
   const webglAddonDisposeSpy = vi.fn();
   const webglContextLossDisposeSpy = vi.fn();
   const webglClearTextureAtlasSpy = vi.fn();
+  const webLinksAddonCtor = vi.fn();
+  const webLinksAddonDisposeSpy = vi.fn();
   const setWebglEnabledSpy = vi.fn();
   const reportWebglFailureSpy = vi.fn();
+  const browserOpenURLSpy = vi.fn();
+  const linkProviderDisposeSpy = vi.fn();
+  const attachUrlHighlighterSpy = vi.fn();
+  const urlHighlighterDisposeSpy = vi.fn();
   const disposeOrder: string[] = [];
-  const state: { capturedOnKey: ((e: { key: string }) => void) | null } = {
+  const state: {
+    capturedOnKey: ((e: { key: string }) => void) | null;
+    linkProvider: {
+      provideLinks: (bufferLineNumber: number, callback: (links: unknown[] | undefined) => void) => void;
+    } | null;
+    lines: Map<number, string>;
+  } = {
     capturedOnKey: null,
+    linkProvider: null,
+    lines: new Map(),
   };
   return {
     eventHandlers,
     writeSpy,
+    pasteSpy,
+    clipboardGetTextSpy,
     disposeSpy,
     reconnectBySessionMock,
     terminalCtor,
@@ -28,8 +46,14 @@ const hoisted = vi.hoisted(() => {
     webglAddonDisposeSpy,
     webglContextLossDisposeSpy,
     webglClearTextureAtlasSpy,
+    webLinksAddonCtor,
+    webLinksAddonDisposeSpy,
     setWebglEnabledSpy,
     reportWebglFailureSpy,
+    browserOpenURLSpy,
+    linkProviderDisposeSpy,
+    attachUrlHighlighterSpy,
+    urlHighlighterDisposeSpy,
     disposeOrder,
     state,
   };
@@ -42,17 +66,54 @@ vi.mock("../../wailsjs/runtime/runtime", () => ({
   EventsOff: (event: string) => {
     hoisted.eventHandlers.delete(event);
   },
+  ClipboardGetText: hoisted.clipboardGetTextSpy,
+  BrowserOpenURL: hoisted.browserOpenURLSpy,
 }));
 
 vi.mock("../../wailsjs/go/ssh/SSH", () => ({
   WriteSSH: vi.fn().mockResolvedValue(undefined),
+  ResizeSSH: vi.fn().mockResolvedValue(undefined),
+  ConnectSSHAsync: vi.fn().mockResolvedValue("conn-ssh"),
+  DisconnectSSH: vi.fn(),
+  SplitSSH: vi.fn().mockResolvedValue("split-ssh"),
+}));
+
+vi.mock("../../wailsjs/go/serial/Serial", () => ({
+  WriteSerial: vi.fn().mockResolvedValue(undefined),
+  ResizeSerialTerminal: vi.fn().mockResolvedValue(undefined),
+  ConnectSerialAsync: vi.fn().mockResolvedValue("conn-serial"),
+  DisconnectSerial: vi.fn(),
+}));
+
+vi.mock("../../wailsjs/go/local/Local", () => ({
+  WriteLocal: vi.fn().mockResolvedValue(undefined),
+  ResizeLocalTerminal: vi.fn().mockResolvedValue(undefined),
+  ConnectLocalAsync: vi.fn().mockResolvedValue("conn-local"),
+  DisconnectLocal: vi.fn(),
+  SplitLocal: vi.fn().mockResolvedValue("split-local"),
 }));
 
 vi.mock("@xterm/xterm", () => {
   class MockTerminal {
-    loadAddon = vi.fn();
+    rows = 24;
+    buffer = {
+      active: {
+        baseY: 0,
+        cursorY: 0,
+        viewportY: 0,
+        length: 24,
+        getLine: (lineNumber: number) => {
+          const line = hoisted.state.lines.get(lineNumber);
+          return line === undefined ? undefined : { translateToString: () => line };
+        },
+      },
+    };
+    loadAddon = vi.fn((addon: { activate?: (terminal: MockTerminal) => void }) => {
+      addon.activate?.(this);
+    });
     open = vi.fn();
     write = hoisted.writeSpy;
+    paste = hoisted.pasteSpy;
     onData = vi.fn(() => ({ dispose: vi.fn() }));
     onKey = vi.fn((handler: (e: { key: string }) => void) => {
       hoisted.state.capturedOnKey = handler;
@@ -61,12 +122,16 @@ vi.mock("@xterm/xterm", () => {
     onWriteParsed = vi.fn(() => ({ dispose: vi.fn() }));
     onRender = vi.fn(() => ({ dispose: vi.fn() }));
     attachCustomKeyEventHandler = vi.fn();
+    registerLinkProvider = vi.fn((provider) => {
+      hoisted.state.linkProvider = provider;
+      return { dispose: hoisted.linkProviderDisposeSpy };
+    });
     dispose = vi.fn(() => {
       hoisted.disposeOrder.push("term");
       hoisted.disposeSpy();
     });
-    constructor() {
-      hoisted.terminalCtor();
+    constructor(options?: unknown) {
+      hoisted.terminalCtor(options);
     }
   }
   return { Terminal: MockTerminal };
@@ -86,6 +151,44 @@ vi.mock("@/components/terminal/terminalInputBridge", () => ({
 
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class {} }));
 vi.mock("@xterm/addon-search", () => ({ SearchAddon: class {} }));
+vi.mock("@xterm/addon-web-links", () => {
+  class MockWebLinksAddon {
+    private linkProviderDispose: { dispose: () => void } | undefined;
+    constructor(private readonly handler: (event: MouseEvent, uri: string) => void) {
+      hoisted.webLinksAddonCtor();
+    }
+    activate = vi.fn((terminal: { registerLinkProvider: (provider: unknown) => { dispose: () => void } }) => {
+      this.linkProviderDispose = terminal.registerLinkProvider({
+        provideLinks: (bufferLineNumber: number, callback: (links: unknown[] | undefined) => void) => {
+          const line = hoisted.state.lines.get(bufferLineNumber - 1);
+          const match = line?.match(/https?:\/\/[^\s<>"'`]+/i);
+          if (!match) {
+            callback(undefined);
+            return;
+          }
+          const rawUrl = match[0];
+          const url = rawUrl.replace(/[),.;!?\]}]+$/, "");
+          callback([
+            {
+              text: url,
+              range: {
+                start: { x: (match.index ?? 0) + 1, y: bufferLineNumber },
+                end: { x: (match.index ?? 0) + url.length, y: bufferLineNumber },
+              },
+              activate: (event: MouseEvent | undefined, text: string) => this.handler(event as MouseEvent, text),
+            },
+          ]);
+        },
+      });
+    });
+    dispose = vi.fn(() => {
+      this.linkProviderDispose?.dispose();
+      hoisted.disposeOrder.push("webLinks");
+      hoisted.webLinksAddonDisposeSpy();
+    });
+  }
+  return { WebLinksAddon: MockWebLinksAddon };
+});
 vi.mock("@xterm/addon-webgl", () => {
   class MockWebglAddon {
     constructor() {
@@ -108,14 +211,36 @@ vi.mock("@xterm/addon-webgl", () => {
 });
 vi.mock("@xterm/xterm/css/xterm.css", () => ({}));
 
-vi.mock("@/stores/terminalStore", () => ({
-  useTerminalStore: {
-    getState: () => ({
-      markClosed: vi.fn(),
-      reconnectBySession: hoisted.reconnectBySessionMock,
-    }),
+vi.mock("@/components/terminal/terminalUrlHighlighter", () => ({
+  attachTerminalUrlHighlighter: (...args: unknown[]) => {
+    hoisted.attachUrlHighlighterSpy(...args);
+    return {
+      setEnabled: vi.fn(),
+      setColor: vi.fn(),
+      dispose: () => {
+        hoisted.disposeOrder.push("urlHighlighter");
+        hoisted.urlHighlighterDisposeSpy();
+      },
+    };
   },
 }));
+
+vi.mock("@/stores/terminalStore", async (importActual) => {
+  const actual = await importActual<typeof import("@/stores/terminalStore")>();
+  return {
+    // 复用真实的 TRANSPORTS 表与 transport 网关函数（纯函数，无副作用），
+    // useTerminalStore 仍替换为最小桩，避免拉起整个 store 的副作用。
+    TRANSPORTS: actual.TRANSPORTS,
+    transportForAsset: actual.transportForAsset,
+    inferTransportFromSessionId: actual.inferTransportFromSessionId,
+    useTerminalStore: {
+      getState: () => ({
+        markClosed: vi.fn(),
+        reconnectBySession: hoisted.reconnectBySessionMock,
+      }),
+    },
+  };
+});
 
 vi.mock("@/stores/terminalThemeStore", () => ({
   useTerminalThemeStore: {
@@ -136,13 +261,66 @@ vi.mock("@/i18n", () => ({
   default: { t: (key: string) => `<<${key}>>` },
 }));
 
-import { getOrCreateTerminal, disposeTerminal } from "@/components/terminal/terminalRegistry";
+import {
+  getOrCreateTerminal,
+  disposeTerminal,
+  pasteIntoTerminal,
+  pasteFromClipboard,
+} from "@/components/terminal/terminalRegistry";
+import { TRANSPORTS, transportForAsset, inferTransportFromSessionId } from "@/stores/terminalStore";
+
+interface TestTerminalLink {
+  text: string;
+  range: { start: { x: number; y: number }; end: { x: number; y: number } };
+  activate: (event: MouseEvent | undefined, text: string) => void;
+}
+
+describe("TRANSPORTS", () => {
+  it("TRANSPORTS 覆盖 ssh/serial/local 且字段齐全", () => {
+    for (const key of ["ssh", "serial", "local"] as const) {
+      const t = TRANSPORTS[key];
+      expect(t.eventPrefix).toBe(key);
+      expect(typeof t.write).toBe("function");
+      expect(typeof t.resize).toBe("function");
+      expect(typeof t.connectAsync).toBe("function");
+      expect(typeof t.disconnect).toBe("function");
+      expect(typeof t.canSplit).toBe("boolean");
+      // canSplit 与 split 必须一致:可分屏的 transport 必须提供 split 实现,反之不提供。
+      expect(typeof t.split === "function").toBe(t.canSplit);
+    }
+    // ssh 复用连接、local 再起一个同 shell 的 PTY,二者均可分屏;serial 物理端口不可复用。
+    expect(TRANSPORTS.ssh.canSplit).toBe(true);
+    expect(TRANSPORTS.serial.canSplit).toBe(false);
+    expect(TRANSPORTS.local.canSplit).toBe(true);
+    // 只有 ssh 同步 cwd / 暴露 SFTP，serial/local 没有目录能力。
+    expect(TRANSPORTS.ssh.hasDirectorySync).toBe(true);
+    expect(TRANSPORTS.serial.hasDirectorySync).toBe(false);
+    expect(TRANSPORTS.local.hasDirectorySync).toBe(false);
+  });
+
+  it("transportForAsset maps asset type → transport", () => {
+    expect(transportForAsset("serial")).toBe("serial");
+    expect(transportForAsset("local")).toBe("local");
+    expect(transportForAsset("ssh")).toBe("ssh");
+    expect(transportForAsset("k8s")).toBe("ssh"); // unknown → ssh default
+  });
+
+  it("inferTransportFromSessionId maps session id prefix → transport", () => {
+    expect(inferTransportFromSessionId("serial-1")).toBe("serial");
+    expect(inferTransportFromSessionId("local-2")).toBe("local");
+    expect(inferTransportFromSessionId("abc-3")).toBe("ssh");
+  });
+});
 
 describe("terminalRegistry", () => {
   beforeEach(() => {
     hoisted.eventHandlers.clear();
     hoisted.state.capturedOnKey = null;
+    hoisted.state.linkProvider = null;
+    hoisted.state.lines.clear();
     hoisted.writeSpy.mockClear();
+    hoisted.pasteSpy.mockClear();
+    hoisted.clipboardGetTextSpy.mockReset();
     hoisted.disposeSpy.mockClear();
     hoisted.reconnectBySessionMock.mockClear();
     hoisted.terminalCtor.mockClear();
@@ -151,8 +329,14 @@ describe("terminalRegistry", () => {
     hoisted.webglAddonDisposeSpy.mockClear();
     hoisted.webglContextLossDisposeSpy.mockClear();
     hoisted.webglClearTextureAtlasSpy.mockClear();
+    hoisted.webLinksAddonCtor.mockClear();
+    hoisted.webLinksAddonDisposeSpy.mockClear();
     hoisted.setWebglEnabledSpy.mockClear();
     hoisted.reportWebglFailureSpy.mockClear();
+    hoisted.browserOpenURLSpy.mockClear();
+    hoisted.linkProviderDisposeSpy.mockClear();
+    hoisted.attachUrlHighlighterSpy.mockClear();
+    hoisted.urlHighlighterDisposeSpy.mockClear();
     hoisted.disposeOrder.length = 0;
   });
 
@@ -203,12 +387,62 @@ describe("terminalRegistry", () => {
     disposeTerminal("sess-4");
   });
 
+  it("loads the official web links addon and opens HTTP URLs through Wails", () => {
+    hoisted.state.lines.set(0, "Docs: https://help.ubuntu.com, ip 10.2.4.16 load 0.06");
+    getOrCreateTerminal("sess-url", { fontSize: 14, fontFamily: "mono", scrollback: 1000 });
+
+    expect(hoisted.webLinksAddonCtor).toHaveBeenCalledTimes(1);
+
+    let links: TestTerminalLink[] | undefined;
+    hoisted.state.linkProvider?.provideLinks(1, (provided) => {
+      links = provided as TestTerminalLink[] | undefined;
+    });
+
+    expect(links).toHaveLength(1);
+    expect(links?.[0].text).toBe("https://help.ubuntu.com");
+    expect(links?.[0].range).toEqual({ start: { x: 7, y: 1 }, end: { x: 29, y: 1 } });
+
+    const link = links?.[0];
+    expect(link).toBeDefined();
+    link?.activate(undefined, link.text);
+    expect(hoisted.browserOpenURLSpy).toHaveBeenCalledWith("https://help.ubuntu.com");
+    disposeTerminal("sess-url");
+  });
+
+  it("does not create links for bare IP addresses or numbers", () => {
+    hoisted.state.lines.set(0, "IPv4 address: 10.2.4.16 load 0.06");
+    getOrCreateTerminal("sess-no-url", { fontSize: 14, fontFamily: "mono", scrollback: 1000 });
+
+    let links: TestTerminalLink[] | undefined;
+    hoisted.state.linkProvider?.provideLinks(1, (provided) => {
+      links = provided as TestTerminalLink[] | undefined;
+    });
+
+    expect(links).toBeUndefined();
+    disposeTerminal("sess-no-url");
+  });
+
+  it("disposes URL link subscriptions", () => {
+    hoisted.state.lines.set(0, "Docs: https://help.ubuntu.com");
+    getOrCreateTerminal("sess-url-dispose", {
+      fontSize: 14,
+      fontFamily: "mono",
+      scrollback: 1000,
+      theme: { brightBlue: "#89b4fa" },
+    });
+
+    disposeTerminal("sess-url-dispose");
+
+    expect(hoisted.linkProviderDisposeSpy).toHaveBeenCalled();
+    expect(hoisted.webLinksAddonDisposeSpy).toHaveBeenCalled();
+  });
+
   it("disposes the input bridge before the xterm instance", () => {
     getOrCreateTerminal("sess-order", { fontSize: 14, fontFamily: "mono", scrollback: 1000 });
     disposeTerminal("sess-order");
     expect(hoisted.bridgeDisposeSpy).toHaveBeenCalled();
     expect(hoisted.disposeSpy).toHaveBeenCalled();
-    expect(hoisted.disposeOrder).toEqual(["bridge", "webgl", "term"]);
+    expect(hoisted.disposeOrder).toEqual(["bridge", "urlHighlighter", "webgl", "webLinks", "term"]);
   });
 
   // 上游 term.dispose() 虽然会级联释放已加载 addon，但 onContextLoss 返回的
@@ -232,6 +466,84 @@ describe("terminalRegistry", () => {
     expect(hoisted.webglAddonCtor).not.toHaveBeenCalled();
     disposeTerminal("sess-no-webgl");
     expect(hoisted.webglAddonDisposeSpy).not.toHaveBeenCalled();
+  });
+
+  // #146: 右键菜单粘贴必须经 xterm 的 term.paste()——它统一做 CRLF/LF → CR 归一化
+  // (replace(/\r?\n/g,"\r")) 并按 bracketed paste 包裹，与原生 Cmd/Ctrl+V 同源。
+  // 旧实现把剪贴板原文(含 \r\n)直接 base64 写给后端：PTY 的 ICRNL 把每个 \r 当换行
+  // 触发 `\` 续行，紧随的裸 \n 又立刻结束空续行并执行半截命令 → 多行命令被逐行拆开
+  // (docker run 单独报 "requires at least 1 argument")。这里锁死"必须走 term.paste"。
+  it("pasteIntoTerminal routes clipboard text through xterm term.paste (not a raw write)", () => {
+    getOrCreateTerminal("sess-paste", { fontSize: 14, fontFamily: "mono", scrollback: 1000 });
+    const crlf = "docker run \\\r\n-v x\r\nnginx";
+    pasteIntoTerminal("sess-paste", crlf);
+    expect(hoisted.pasteSpy).toHaveBeenCalledTimes(1);
+    expect(hoisted.pasteSpy).toHaveBeenCalledWith(crlf);
+    disposeTerminal("sess-paste");
+  });
+
+  it("pasteIntoTerminal is a no-op for an unknown session", () => {
+    expect(() => pasteIntoTerminal("sess-missing", "x")).not.toThrow();
+    expect(hoisted.pasteSpy).not.toHaveBeenCalled();
+  });
+
+  // 右键菜单粘贴必须经 Wails 原生 ClipboardGetText（Go 侧读系统剪贴板），
+  // 不能用 navigator.clipboard.readText()——macOS WKWebView 对 JS 读剪贴板有隐私
+  // 保护，会在光标处弹出系统原生「粘贴」按钮要求二次点击，而不是直接粘贴。
+  // 这里锁死"必须走原生 ClipboardGetText 取文，再喂给 term.paste"。
+  it("pasteFromClipboard reads via native Wails ClipboardGetText and routes through term.paste", async () => {
+    getOrCreateTerminal("sess-clip", { fontSize: 14, fontFamily: "mono", scrollback: 1000 });
+    const clip = "docker run \\\r\n-v x\r\nnginx";
+    hoisted.clipboardGetTextSpy.mockResolvedValue(clip);
+    await pasteFromClipboard("sess-clip");
+    expect(hoisted.clipboardGetTextSpy).toHaveBeenCalledTimes(1);
+    expect(hoisted.pasteSpy).toHaveBeenCalledTimes(1);
+    expect(hoisted.pasteSpy).toHaveBeenCalledWith(clip);
+    disposeTerminal("sess-clip");
+  });
+
+  it("pasteFromClipboard does not paste when the clipboard is empty", async () => {
+    getOrCreateTerminal("sess-clip-empty", { fontSize: 14, fontFamily: "mono", scrollback: 1000 });
+    hoisted.clipboardGetTextSpy.mockResolvedValue("");
+    await pasteFromClipboard("sess-clip-empty");
+    expect(hoisted.clipboardGetTextSpy).toHaveBeenCalledTimes(1);
+    expect(hoisted.pasteSpy).not.toHaveBeenCalled();
+    disposeTerminal("sess-clip-empty");
+  });
+
+  it("writes terminal output bytes unchanged without injecting URL color ANSI", () => {
+    const encoder = new TextEncoder();
+    getOrCreateTerminal("sess-url-ansi", {
+      fontSize: 14,
+      fontFamily: "mono",
+      scrollback: 1000,
+      theme: { brightBlue: "#89b4fa" },
+    });
+
+    hoisted.eventHandlers.get("ssh:data:sess-url-ansi")?.(
+      btoa(String.fromCharCode(...encoder.encode("\x1b[31mDocs: https://help.ubuntu.com suffix\x1b[0m")))
+    );
+
+    expect(hoisted.writeSpy).toHaveBeenCalledWith(
+      encoder.encode("\x1b[31mDocs: https://help.ubuntu.com suffix\x1b[0m")
+    );
+    disposeTerminal("sess-url-ansi");
+  });
+
+  it("attaches a url highlighter and disposes it with the terminal", () => {
+    getOrCreateTerminal("sess-highlight", { fontSize: 14, fontFamily: "mono", scrollback: 1000 });
+    expect(hoisted.attachUrlHighlighterSpy).toHaveBeenCalledTimes(1);
+
+    disposeTerminal("sess-highlight");
+    expect(hoisted.urlHighlighterDisposeSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("enables allowProposedApi so the highlighter's registerDecoration calls don't throw", () => {
+    // registerDecoration / registerMarker are proposed API in xterm and throw unless
+    // allowProposedApi is set — without this the link highlight silently never renders (#153).
+    getOrCreateTerminal("sess-proposed", { fontSize: 14, fontFamily: "mono", scrollback: 1000 });
+    expect(hoisted.terminalCtor).toHaveBeenCalledWith(expect.objectContaining({ allowProposedApi: true }));
+    disposeTerminal("sess-proposed");
   });
 
   it("re-creates a fresh terminal after dispose for the same sessionId", () => {

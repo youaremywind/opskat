@@ -1,12 +1,11 @@
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { FolderOpen, Folder, FileCode } from "lucide-react";
+import { Activity, FolderOpen, Folder, FileCode } from "lucide-react";
 import { Button } from "@opskat/ui";
 import { useSFTPStore } from "@/stores/sftpStore";
-import { useTerminalStore } from "@/stores/terminalStore";
+import { useTerminalStore, TRANSPORTS } from "@/stores/terminalStore";
 import { SnippetPopover } from "@/components/snippet/SnippetPopover";
-import { WriteSSH } from "../../../wailsjs/go/ssh/SSH";
-import { WriteSerial } from "../../../wailsjs/go/serial/Serial";
+import { TerminalServerStatusDialog } from "@/components/terminal/TerminalServerStatusDialog";
 import { bytesToBase64 } from "@/lib/terminalEncode";
 
 interface TerminalToolbarProps {
@@ -15,6 +14,7 @@ interface TerminalToolbarProps {
 
 export function TerminalToolbar({ tabId }: TerminalToolbarProps) {
   const { t } = useTranslation();
+  const [statusOpen, setStatusOpen] = useState(false);
   const tabData = useTerminalStore((s) => s.tabData[tabId]);
   const toggleFileManager = useSFTPStore((s) => s.toggleFileManager);
   const isOpen = useSFTPStore((s) => s.fileManagerOpenTabs[tabId]);
@@ -22,16 +22,16 @@ export function TerminalToolbar({ tabId }: TerminalToolbarProps) {
   const activePaneId = tabData?.activePaneId;
   const activePane = activePaneId ? tabData?.panes[activePaneId] : undefined;
   const activePaneConnected = activePane?.connected ?? false;
-  const isSerialActivePane = activePane?.transport === "serial";
+  const activeTransport = activePane?.transport ?? "ssh";
+  const activeSpec = TRANSPORTS[activeTransport];
 
   const handleSnippetInsert = useCallback(
     (content: string, { withEnter }: { withEnter: boolean }) => {
       if (!activePaneId) return;
       const payload = withEnter ? content + "\r" : content;
-      const writeFn = isSerialActivePane ? WriteSerial : WriteSSH;
-      writeFn(activePaneId, bytesToBase64(new TextEncoder().encode(payload))).catch(console.error);
+      activeSpec.write(activePaneId, bytesToBase64(new TextEncoder().encode(payload))).catch(console.error);
     },
-    [activePaneId, isSerialActivePane]
+    [activePaneId, activeSpec]
   );
 
   if (!tabData) return null;
@@ -58,7 +58,21 @@ export function TerminalToolbar({ tabId }: TerminalToolbarProps) {
           </Button>
         }
       />
-      {!isSerialActivePane && (
+      {activeTransport === "ssh" && activePaneConnected && activePaneId && (
+        <>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            title={t("terminal.serverStatus.trigger")}
+            aria-label={t("terminal.serverStatus.trigger")}
+            onClick={() => setStatusOpen(true)}
+          >
+            <Activity className="h-3.5 w-3.5" />
+          </Button>
+          <TerminalServerStatusDialog open={statusOpen} onOpenChange={setStatusOpen} sessionId={activePaneId} />
+        </>
+      )}
+      {activeSpec.hasDirectorySync && (
         <Button
           variant={isOpen ? "secondary" : "ghost"}
           size="icon-xs"

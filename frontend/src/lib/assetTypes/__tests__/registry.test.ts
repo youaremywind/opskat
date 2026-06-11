@@ -9,6 +9,7 @@ describe("AssetType Registry", () => {
     expect(getAssetType("mongodb")).toBeDefined();
     expect(getAssetType("kafka")).toBeDefined();
     expect(getAssetType("k8s")).toBeDefined();
+    expect(getAssetType("local")).toBeDefined();
   });
 
   it("returns undefined for unknown type", () => {
@@ -32,6 +33,8 @@ describe("AssetType Registry", () => {
       "kafka",
       "k8s",
       "serial",
+      "local",
+      "etcd",
     ]);
   });
 
@@ -55,11 +58,29 @@ describe("AssetType Registry", () => {
     expect(getAssetType("kafka")!.connectAction).toBe("query");
   });
 
-  it("only ssh supports new tab", () => {
+  it("local is terminal type", () => {
+    expect(getAssetType("local")!.connectAction).toBe("terminal");
+  });
+
+  it("ssh, serial, and local support new tab", () => {
     expect(getAssetType("ssh")!.canConnectInNewTab).toBe(true);
+    expect(getAssetType("serial")!.canConnectInNewTab).toBe(true);
+    expect(getAssetType("local")!.canConnectInNewTab).toBe(true);
     expect(getAssetType("database")!.canConnectInNewTab).toBe(false);
     expect(getAssetType("mongodb")!.canConnectInNewTab).toBe(false);
     expect(getAssetType("kafka")!.canConnectInNewTab).toBe(false);
     expect(getAssetType("k8s")!.canConnectInNewTab).toBe(false);
+  });
+
+  it("only ssh exposes the file-manager action (registry-driven, no type-string special-case)", () => {
+    expect(getAssetType("ssh")!.canOpenFileManager).toBe(true);
+    expect(getAssetType("database")!.canOpenFileManager).toBeFalsy();
+    expect(getAssetType("redis")!.canOpenFileManager).toBeFalsy();
+    expect(getAssetType("mongodb")!.canOpenFileManager).toBeFalsy();
+    expect(getAssetType("kafka")!.canOpenFileManager).toBeFalsy();
+    expect(getAssetType("k8s")!.canOpenFileManager).toBeFalsy();
+    expect(getAssetType("serial")!.canOpenFileManager).toBeFalsy();
+    expect(getAssetType("local")!.canOpenFileManager).toBeFalsy();
+    expect(getAssetType("etcd")!.canOpenFileManager).toBeFalsy();
   });
 });

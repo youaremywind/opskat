@@ -23,6 +23,7 @@ import {
 } from "@opskat/ui";
 import { PencilLine, Plus, Save, Trash2 } from "lucide-react";
 import { toast } from "sonner";
+import { notifySuccess } from "@/lib/notify";
 import {
   type ExternalEditEditor,
   type ExternalEditEditorConfig,
@@ -170,7 +171,7 @@ export function ExternalEditSection() {
       setCleanupRetentionDays(String(next.cleanupRetentionDays || 7));
       setMaxReadFileSizeMB(String(next.maxReadFileSizeMB || 10));
       setCustomEditors(normalizeEditors(next.customEditors || []));
-      toast.success(t("externalEdit.settings.saved"));
+      notifySuccess(t("externalEdit.settings.saved"));
     } catch (error) {
       toast.error(errMsg(error));
     } finally {

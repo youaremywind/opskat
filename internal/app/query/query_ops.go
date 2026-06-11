@@ -15,7 +15,6 @@ import (
 	"github.com/opskat/opskat/internal/service/asset_svc"
 	"github.com/opskat/opskat/internal/service/credential_resolver"
 	"github.com/opskat/opskat/internal/service/query_svc"
-	"github.com/opskat/opskat/internal/service/testreg"
 
 	"github.com/cago-frame/cago/pkg/logger"
 	"github.com/redis/go-redis/v9"
@@ -28,6 +27,7 @@ import (
 func (q *Query) getOrDialPanelDB(ctx context.Context, asset *asset_entity.Asset, cfg *asset_entity.DatabaseConfig, password string) (*sql.DB, error) {
 	key := fmt.Sprintf("%d:%s", asset.ID, cfg.Database)
 	db, _, err := q.dbPanelCache.GetOrDial(key, func() (*sql.DB, io.Closer, error) {
+		cfg.Proxy = credential_resolver.Default().DecryptProxyPassword(cfg.Proxy)
 		return connpool.DialDatabase(ctx, asset, cfg, password, q.pool)
 	})
 	if err != nil {
@@ -40,6 +40,7 @@ func (q *Query) getOrDialPanelDB(ctx context.Context, asset *asset_entity.Asset,
 func (q *Query) getOrDialPanelRedis(ctx context.Context, asset *asset_entity.Asset, cfg *asset_entity.RedisConfig, password string) (*redis.Client, error) {
 	key := fmt.Sprintf("%d:%d", asset.ID, cfg.Database)
 	client, _, err := q.redisPanelCache.GetOrDial(key, func() (*redis.Client, io.Closer, error) {
+		cfg.Proxy = credential_resolver.Default().DecryptProxyPassword(cfg.Proxy)
 		return connpool.DialRedis(ctx, asset, cfg, password, q.pool)
 	})
 	if err != nil {
@@ -52,6 +53,7 @@ func (q *Query) getOrDialPanelRedis(ctx context.Context, asset *asset_entity.Ass
 func (q *Query) getOrDialPanelMongo(ctx context.Context, asset *asset_entity.Asset, cfg *asset_entity.MongoDBConfig, password string) (*connpool.MongoClientCloser, error) {
 	key := fmt.Sprintf("%d", asset.ID)
 	wrapped, _, err := q.mongoPanelCache.GetOrDial(key, func() (*connpool.MongoClientCloser, io.Closer, error) {
+		cfg.Proxy = credential_resolver.Default().DecryptProxyPassword(cfg.Proxy)
 		client, closer, derr := connpool.DialMongoDB(ctx, asset, cfg, password, q.pool)
 		if derr != nil {
 			return nil, nil, derr
@@ -64,17 +66,13 @@ func (q *Query) getOrDialPanelMongo(ctx context.Context, asset *asset_entity.Ass
 	return wrapped, nil
 }
 
-// TestDatabaseConnection 测试数据库连接
-func (q *Query) TestDatabaseConnection(testID string, configJSON string, plainPassword string) error {
+// testDatabaseConnection 测试一份未保存的数据库配置；经 conntest 注册表由
+// System.TestAssetConnection 分发，信封（超时/取消/i18n ctx）由调用方统一施加。
+func (q *Query) testDatabaseConnection(ctx context.Context, configJSON string, plainPassword string) error {
 	var cfg asset_entity.DatabaseConfig
 	if err := json.Unmarshal([]byte(configJSON), &cfg); err != nil {
 		return fmt.Errorf("配置解析失败: %w", err)
 	}
-
-	parent, parentCancel := context.WithTimeout(i18n.Ctx(q.ctx, q.lang.Lang()), 10*time.Second)
-	defer parentCancel()
-	ctx, release := testreg.Begin(parent, testID)
-	defer release()
 
 	password := plainPassword
 	if password == "" {
@@ -86,6 +84,7 @@ func (q *Query) TestDatabaseConnection(testID string, configJSON string, plainPa
 	}
 
 	testAsset := &asset_entity.Asset{}
+	cfg.Proxy = credential_resolver.Default().DecryptProxyPassword(cfg.Proxy)
 	db, tunnel, err := connpool.DialDatabase(ctx, testAsset, &cfg, password, q.pool)
 	if err != nil {
 		return err
@@ -103,17 +102,13 @@ func (q *Query) TestDatabaseConnection(testID string, configJSON string, plainPa
 	return nil
 }
 
-// TestRedisConnection 测试 Redis 连接
-func (q *Query) TestRedisConnection(testID string, configJSON string, plainPassword string) error {
+// testRedisConnection 测试一份未保存的 Redis 配置；经 conntest 注册表由
+// System.TestAssetConnection 分发，信封（超时/取消/i18n ctx）由调用方统一施加。
+func (q *Query) testRedisConnection(ctx context.Context, configJSON string, plainPassword string) error {
 	var cfg asset_entity.RedisConfig
 	if err := json.Unmarshal([]byte(configJSON), &cfg); err != nil {
 		return fmt.Errorf("配置解析失败: %w", err)
 	}
-
-	parent, parentCancel := context.WithTimeout(i18n.Ctx(q.ctx, q.lang.Lang()), 10*time.Second)
-	defer parentCancel()
-	ctx, release := testreg.Begin(parent, testID)
-	defer release()
 
 	password := plainPassword
 	if password == "" {
@@ -125,6 +120,7 @@ func (q *Query) TestRedisConnection(testID string, configJSON string, plainPassw
 	}
 
 	testAsset := &asset_entity.Asset{}
+	cfg.Proxy = credential_resolver.Default().DecryptProxyPassword(cfg.Proxy)
 	client, tunnel, err := connpool.DialRedis(ctx, testAsset, &cfg, password, q.pool)
 	if err != nil {
 		return err
@@ -289,7 +285,7 @@ func (q *Query) ExecuteSQLPaged(assetID int64, sqlText string, database string, 
 		return "", fmt.Errorf("连接数据库失败: %w", err)
 	}
 
-	return helper.ExecuteSQLPaged(ctx, db, sqlText, page, pageSize)
+	return helper.ExecuteSQLPaged(ctx, db, sqlText, page, pageSize, cfg.Driver)
 }
 
 // ExecuteRedis 在指定 Redis 资产上执行命令
@@ -322,17 +318,13 @@ func (q *Query) ExecuteRedis(assetID int64, command string, db int) (string, err
 	return helper.ExecuteRedis(ctx, client, command)
 }
 
-// TestMongoDBConnection 测试 MongoDB 连接
-func (q *Query) TestMongoDBConnection(testID string, configJSON string, plainPassword string) error {
+// testMongoConnection 测试一份未保存的 MongoDB 配置；经 conntest 注册表由
+// System.TestAssetConnection 分发，信封（超时/取消/i18n ctx）由调用方统一施加。
+func (q *Query) testMongoConnection(ctx context.Context, configJSON string, plainPassword string) error {
 	var cfg asset_entity.MongoDBConfig
 	if err := json.Unmarshal([]byte(configJSON), &cfg); err != nil {
 		return fmt.Errorf("配置解析失败: %w", err)
 	}
-
-	parent, parentCancel := context.WithTimeout(i18n.Ctx(q.ctx, q.lang.Lang()), 10*time.Second)
-	defer parentCancel()
-	ctx, release := testreg.Begin(parent, testID)
-	defer release()
 
 	password := plainPassword
 	if password == "" {
@@ -344,6 +336,7 @@ func (q *Query) TestMongoDBConnection(testID string, configJSON string, plainPas
 	}
 
 	testAsset := &asset_entity.Asset{}
+	cfg.Proxy = credential_resolver.Default().DecryptProxyPassword(cfg.Proxy)
 	client, tunnel, err := connpool.DialMongoDB(ctx, testAsset, &cfg, password, q.pool)
 	if err != nil {
 		return err

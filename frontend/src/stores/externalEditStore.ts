@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { toast } from "sonner";
+import { notifySuccess } from "@/lib/notify";
 import {
   applyExternalEditMerge,
   compareExternalEditSession,
@@ -686,7 +686,7 @@ export const useExternalEditStore = create<ExternalEditState>((set) => ({
     }
 
     if (event.type === "session_saved" && event.saveResult?.message) {
-      toast.success(event.saveResult.message);
+      notifySuccess(event.saveResult.message);
     }
   },
 }));

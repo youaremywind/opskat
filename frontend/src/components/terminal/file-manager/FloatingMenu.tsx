@@ -18,7 +18,7 @@ import {
   Terminal,
   Trash2,
 } from "lucide-react";
-import { cn } from "@opskat/ui";
+import { cn, computeContextMenuPosition } from "@opskat/ui";
 import { type CtxMenuState } from "./types";
 
 interface FloatingMenuProps {
@@ -38,15 +38,15 @@ export function FloatingMenu({ canPaste, ctx, onAction, onClose }: FloatingMenuP
   useLayoutEffect(() => {
     if (!ref.current) return;
     const rect = ref.current.getBoundingClientRect();
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    let left = ctx.x + 2;
-    let top = ctx.y + 2;
-    if (left + rect.width > vw) left = ctx.x - rect.width - 2;
-    if (top + rect.height > vh) top = ctx.y - rect.height - 2;
-    left = Math.max(4, Math.min(left, vw - rect.width - 4));
-    top = Math.max(4, Math.min(top, vh - rect.height - 4));
-    setPos({ top, left });
+    const next = computeContextMenuPosition({
+      anchorX: ctx.x,
+      anchorY: ctx.y,
+      width: rect.width,
+      height: rect.height,
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight,
+    });
+    setPos({ top: next.top, left: next.left });
     setVisible(true);
   }, [ctx.x, ctx.y]);
 
@@ -80,10 +80,12 @@ export function FloatingMenu({ canPaste, ctx, onAction, onClose }: FloatingMenuP
     label: string,
     opts: { destructive?: boolean; disabled?: boolean } = {}
   ) => (
-    <div
+    <button
       key={action}
+      type="button"
+      disabled={opts.disabled}
       className={cn(
-        "flex items-center gap-2 rounded-sm px-2 py-1.5 text-sm cursor-default select-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+        "flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm cursor-default select-none disabled:pointer-events-none disabled:opacity-40 [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
         opts.disabled && "pointer-events-none opacity-40",
         opts.destructive
           ? "text-destructive hover:bg-destructive/10 [&_svg]:text-destructive"
@@ -93,7 +95,7 @@ export function FloatingMenu({ canPaste, ctx, onAction, onClose }: FloatingMenuP
     >
       {icon}
       {label}
-    </div>
+    </button>
   );
 
   const separator = <div className="-mx-1 my-1 h-px bg-border" />;
@@ -121,6 +123,7 @@ export function FloatingMenu({ canPaste, ctx, onAction, onClose }: FloatingMenuP
           {separator}
           {item("cutSelected", <Scissors />, t("sftp.menu.cutSelected", { count: multiCount }))}
           {item("copySelected", <Copy />, t("sftp.menu.copySelected", { count: multiCount }))}
+          {item("copySelectedFilePaths", <Copy />, t("sftp.menu.copySelectedFilePaths", { count: multiCount }))}
           {item("paste", <Clipboard />, t("sftp.menu.paste"), { disabled: !canPaste })}
           {separator}
           {item("deleteSelected", <Trash2 />, t("sftp.menu.deleteSelected", { count: multiCount }), {
@@ -136,6 +139,7 @@ export function FloatingMenu({ canPaste, ctx, onAction, onClose }: FloatingMenuP
             {separator}
             {item("cut", <Scissors />, t("sftp.menu.cut"))}
             {item("copy", <Copy />, t("sftp.menu.copy"))}
+            {item("copyFilePath", <Copy />, t("sftp.menu.copyFilePath"))}
             {item("paste", <Clipboard />, t("sftp.menu.paste"), { disabled: !canPaste })}
             {separator}
             {item("rename", <Edit3 />, t("sftp.menu.rename"))}
@@ -156,6 +160,7 @@ export function FloatingMenu({ canPaste, ctx, onAction, onClose }: FloatingMenuP
             {separator}
             {item("cut", <Scissors />, t("sftp.menu.cut"))}
             {item("copy", <Copy />, t("sftp.menu.copy"))}
+            {item("copyFilePath", <Copy />, t("sftp.menu.copyFilePath"))}
             {item("paste", <Clipboard />, t("sftp.menu.paste"), { disabled: !canPaste })}
             {separator}
             {item("rename", <Edit3 />, t("sftp.menu.rename"))}

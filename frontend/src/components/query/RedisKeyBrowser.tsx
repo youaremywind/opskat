@@ -1,6 +1,7 @@
 import {
   useState,
   useEffect,
+  useLayoutEffect,
   useRef,
   useCallback,
   useMemo,
@@ -28,7 +29,8 @@ import {
 } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { toast } from "sonner";
-import { Button, Input, ConfirmDialog } from "@opskat/ui";
+import { notifyCopied } from "@/lib/notify";
+import { Button, Input, ConfirmDialog, computeContextMenuPosition } from "@opskat/ui";
 import { useQueryStore } from "@/stores/queryStore";
 import { useTabStore, type QueryTabMeta } from "@/stores/tabStore";
 import {
@@ -236,6 +238,7 @@ export function RedisKeyBrowser({ tabId }: RedisKeyBrowserProps) {
 
   // Context menu state
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; key: string } | null>(null);
+  const [ctxMenuPosition, setCtxMenuPosition] = useState<{ top: number; left: number } | null>(null);
   const ctxMenuRef = useRef<HTMLDivElement>(null);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
@@ -343,7 +346,10 @@ export function RedisKeyBrowser({ tabId }: RedisKeyBrowserProps) {
   // Close context menu on outside click / escape
   useEffect(() => {
     if (!ctxMenu) return;
-    const close = () => setCtxMenu(null);
+    const close = () => {
+      setCtxMenu(null);
+      setCtxMenuPosition(null);
+    };
     const onKey = (e: globalThis.KeyboardEvent) => {
       if (e.key === "Escape") close();
     };
@@ -360,6 +366,20 @@ export function RedisKeyBrowser({ tabId }: RedisKeyBrowserProps) {
       document.removeEventListener("pointerdown", onPointer, true);
       document.removeEventListener("keydown", onKey);
     };
+  }, [ctxMenu]);
+
+  useLayoutEffect(() => {
+    if (!ctxMenu || !ctxMenuRef.current) return;
+    const rect = ctxMenuRef.current.getBoundingClientRect();
+    const next = computeContextMenuPosition({
+      anchorX: ctxMenu.x,
+      anchorY: ctxMenu.y,
+      width: rect.width,
+      height: rect.height,
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight,
+    });
+    setCtxMenuPosition({ top: next.top, left: next.left });
   }, [ctxMenu]);
 
   const handleDbChange = useCallback(
@@ -419,7 +439,7 @@ export function RedisKeyBrowser({ tabId }: RedisKeyBrowserProps) {
   const handleCopyKeyName = useCallback(() => {
     if (!ctxMenu) return;
     navigator.clipboard.writeText(ctxMenu.key);
-    toast.success(t("query.copied"));
+    notifyCopied(t("query.copied"));
     setCtxMenu(null);
   }, [ctxMenu, t]);
 
@@ -561,6 +581,7 @@ export function RedisKeyBrowser({ tabId }: RedisKeyBrowserProps) {
                       ? (e) => {
                           e.preventDefault();
                           e.stopPropagation();
+                          setCtxMenuPosition(null);
                           setCtxMenu({ x: e.clientX, y: e.clientY, key: row.fullKey! });
                         }
                       : undefined
@@ -632,6 +653,7 @@ export function RedisKeyBrowser({ tabId }: RedisKeyBrowserProps) {
                 onContextMenu={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
+                  setCtxMenuPosition(null);
                   setCtxMenu({ x: e.clientX, y: e.clientY, key });
                 }}
               >
@@ -678,7 +700,12 @@ export function RedisKeyBrowser({ tabId }: RedisKeyBrowserProps) {
           <div
             ref={ctxMenuRef}
             className="z-50 min-w-[8rem] overflow-hidden rounded-md border bg-popover p-1 text-popover-foreground shadow-md animate-in fade-in-0 zoom-in-95"
-            style={{ position: "fixed", top: ctxMenu.y + 2, left: ctxMenu.x + 2 }}
+            style={{
+              position: "fixed",
+              top: ctxMenuPosition?.top ?? ctxMenu.y,
+              left: ctxMenuPosition?.left ?? ctxMenu.x,
+              visibility: ctxMenuPosition ? "visible" : "hidden",
+            }}
           >
             <div
               role="menuitem"
