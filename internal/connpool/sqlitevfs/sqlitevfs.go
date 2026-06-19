@@ -214,9 +214,31 @@ func (v *remoteVFS) Open(name string, flags vfs.OpenFlag) (vfs.File, vfs.OpenFla
 
 	f, err := v.remote.OpenFile(remotePath, fileFlags)
 	if err != nil {
-		return nil, 0, sqlite3.CANTOPEN
+		return nil, 0, vfs.SystemError(
+			fmt.Errorf("open remote SQLite file %s flags=%s: %w", remotePath, formatOpenFlags(fileFlags), err),
+			sqlite3.CANTOPEN,
+		)
 	}
 	return &remoteFile{vfs: v, file: f, remotePath: remotePath, deleteOnClose: flags&vfs.OPEN_DELETEONCLOSE != 0}, flags, nil
+}
+
+func formatOpenFlags(flags int) string {
+	parts := make([]string, 0, 4)
+	switch {
+	case flags&os.O_RDWR != 0:
+		parts = append(parts, "O_RDWR")
+	case flags&os.O_WRONLY != 0:
+		parts = append(parts, "O_WRONLY")
+	default:
+		parts = append(parts, "O_RDONLY")
+	}
+	if flags&os.O_CREATE != 0 {
+		parts = append(parts, "O_CREATE")
+	}
+	if flags&os.O_EXCL != 0 {
+		parts = append(parts, "O_EXCL")
+	}
+	return strings.Join(parts, "|")
 }
 
 func (v *remoteVFS) Delete(name string, _ bool) error {

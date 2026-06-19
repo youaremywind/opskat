@@ -3,6 +3,7 @@ package sqlitevfs
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -110,6 +111,21 @@ func TestOpenRemoteSQLiteCleansLockOnOpenError(t *testing.T) {
 	})
 }
 
+func TestOpenRemoteSQLiteReportsOpenPathAndFlags(t *testing.T) {
+	Convey("remote OpenFile failures keep the path and flags in sqlite error text", t, func() {
+		remote := failingOpenRemote{localRemote: localRemote{root: t.TempDir()}}
+
+		db, closer, err := Open(context.Background(), remote, "/data/app.db", Options{})
+		So(db, ShouldBeNil)
+		So(closer, ShouldBeNil)
+		So(err, ShouldNotBeNil)
+		So(err.Error(), ShouldContainSubstring, "set journal mode")
+		So(err.Error(), ShouldContainSubstring, "/data/app.db")
+		So(err.Error(), ShouldContainSubstring, "O_RDWR")
+		So(err.Error(), ShouldContainSubstring, "synthetic open failure")
+	})
+}
+
 type localRemote struct {
 	root string
 }
@@ -162,3 +178,14 @@ func (r localRemote) fullPath(name string) (string, error) {
 var _ RemoteFS = localRemote{}
 var _ RemoteFile = (*os.File)(nil)
 var _ io.Closer = (*os.File)(nil)
+
+type failingOpenRemote struct {
+	localRemote
+}
+
+func (r failingOpenRemote) OpenFile(name string, flag int) (RemoteFile, error) {
+	if name == "/data/app.db.opskat.lock" {
+		return r.localRemote.OpenFile(name, flag)
+	}
+	return nil, fmt.Errorf("synthetic open failure")
+}

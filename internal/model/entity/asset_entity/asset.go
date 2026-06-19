@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -759,19 +760,22 @@ func (a *Asset) validateDatabase() error {
 		if cfg.Path == "" {
 			return errors.New("SQLite 必须指定 path")
 		}
-		if !filepath.IsAbs(cfg.Path) {
-			return errors.New("SQLite path 必须为绝对路径")
-		}
 		source := cfg.SQLiteSource
 		if source == "" {
 			source = SQLiteSourceLocal
 		}
 		switch source {
 		case SQLiteSourceLocal:
+			if !filepath.IsAbs(cfg.Path) {
+				return errors.New("SQLite path 必须为绝对路径")
+			}
 			if a.SSHTunnelID > 0 || cfg.SSHAssetID > 0 {
 				return errors.New("SQLite 本地文件不支持 SSH 隧道")
 			}
 		case SQLiteSourceRemoteSSHVFS:
+			if !path.IsAbs(cfg.Path) {
+				return errors.New("SQLite path 必须为绝对路径")
+			}
 			if a.SSHTunnelID == 0 && cfg.SSHAssetID == 0 {
 				return errors.New("远端 SQLite 必须指定 SSH 资产")
 			}

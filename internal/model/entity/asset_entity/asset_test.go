@@ -525,6 +525,15 @@ func TestValidateDatabaseSQLite(t *testing.T) {
 			convey.So(a.SetDatabaseConfig(cfg), convey.ShouldBeNil)
 			convey.So(a.Validate(), convey.ShouldBeNil)
 		})
+		convey.Convey("远端 SQLite VFS 使用 POSIX 绝对路径语义", func() {
+			a := &Asset{
+				Type: AssetTypeDatabase, Name: "x", GroupID: 1,
+				SSHTunnelID: 5,
+			}
+			cfg := &DatabaseConfig{Driver: DriverSQLite, SQLiteSource: SQLiteSourceRemoteSSHVFS, Path: `C:\tmp\x.db`}
+			convey.So(a.SetDatabaseConfig(cfg), convey.ShouldBeNil)
+			convey.So(a.Validate().Error(), convey.ShouldContainSubstring, "绝对路径")
+		})
 		convey.Convey("绝对路径 + 无隧道通过", func() {
 			a := &Asset{Type: AssetTypeDatabase, Name: "x", GroupID: 1}
 			cfg := &DatabaseConfig{Driver: DriverSQLite, Path: "/tmp/x.db"}
