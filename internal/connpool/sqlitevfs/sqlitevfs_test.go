@@ -86,14 +86,64 @@ func TestOpenRemoteSQLiteLockFileBlocksSecondWriter(t *testing.T) {
 	})
 }
 
-func TestOpenRemoteSQLiteRejectsWALWithoutExclusive(t *testing.T) {
-	Convey("WAL is rejected unless exclusive locking is explicit", t, func() {
+func TestOpenRemoteSQLiteOpensWALDatabaseReadOnly(t *testing.T) {
+	Convey("a WAL-mode remote database opens read-only and is queryable", t, func() {
 		remote := localRemote{root: t.TempDir()}
 
-		_, closer, err := Open(context.Background(), remote, "/data/app.db", Options{JournalMode: JournalModeWAL})
-		So(err, ShouldNotBeNil)
-		So(closer, ShouldBeNil)
-		So(err.Error(), ShouldContainSubstring, "WAL")
+		// Create a WAL-mode database with some data.
+		db, closer, err := Open(context.Background(), remote, "/data/app.db", Options{JournalMode: JournalModeWAL})
+		So(err, ShouldBeNil)
+		_, err = db.Exec("CREATE TABLE t (id INTEGER)")
+		So(err, ShouldBeNil)
+		_, err = db.Exec("INSERT INTO t VALUES (42)")
+		So(err, ShouldBeNil)
+		var mode string
+		So(db.QueryRow("PRAGMA journal_mode").Scan(&mode), ShouldBeNil)
+		So(mode, ShouldEqual, "wal")
+		So(db.Close(), ShouldBeNil)
+		So(closer.Close(), ShouldBeNil)
+
+		// Re-open read-only. This used to fail with
+		// "set journal mode: sqlite3: unable to open database file" because the
+		// remote VFS provided no shared memory for the WAL-index.
+		roDB, roCloser, err := Open(context.Background(), remote, "/data/app.db", Options{ReadOnly: true})
+		So(err, ShouldBeNil)
+		defer func() { _ = roCloser.Close() }()
+		defer func() { _ = roDB.Close() }()
+
+		var got int
+		So(roDB.QueryRow("SELECT id FROM t").Scan(&got), ShouldBeNil)
+		So(got, ShouldEqual, 42)
+		// The database keeps its WAL mode; we did not rewrite the header.
+		So(roDB.QueryRow("PRAGMA journal_mode").Scan(&mode), ShouldBeNil)
+		So(mode, ShouldEqual, "wal")
+	})
+}
+
+func TestOpenRemoteSQLiteOpensWALDatabaseReadWrite(t *testing.T) {
+	Convey("a WAL-mode remote database opens read-write and keeps its mode", t, func() {
+		remote := localRemote{root: t.TempDir()}
+
+		db, closer, err := Open(context.Background(), remote, "/data/app.db", Options{JournalMode: JournalModeWAL})
+		So(err, ShouldBeNil)
+		_, err = db.Exec("CREATE TABLE t (id INTEGER)")
+		So(err, ShouldBeNil)
+		So(db.Close(), ShouldBeNil)
+		So(closer.Close(), ShouldBeNil)
+
+		rwDB, rwCloser, err := Open(context.Background(), remote, "/data/app.db", Options{})
+		So(err, ShouldBeNil)
+		defer func() { _ = rwCloser.Close() }()
+		defer func() { _ = rwDB.Close() }()
+
+		_, err = rwDB.Exec("INSERT INTO t VALUES (7)")
+		So(err, ShouldBeNil)
+		var n int
+		So(rwDB.QueryRow("SELECT count(*) FROM t").Scan(&n), ShouldBeNil)
+		So(n, ShouldEqual, 1)
+		var mode string
+		So(rwDB.QueryRow("PRAGMA journal_mode").Scan(&mode), ShouldBeNil)
+		So(mode, ShouldEqual, "wal")
 	})
 }
 
@@ -119,7 +169,10 @@ func TestOpenRemoteSQLiteReportsOpenPathAndFlags(t *testing.T) {
 		So(db, ShouldBeNil)
 		So(closer, ShouldBeNil)
 		So(err, ShouldNotBeNil)
-		So(err.Error(), ShouldContainSubstring, "set journal mode")
+		// locking_mode=EXCLUSIVE is the first statement to touch the file, so a
+		// failing remote OpenFile surfaces here — still carrying the path, flags,
+		// and underlying cause from the VFS layer.
+		So(err.Error(), ShouldContainSubstring, "set locking mode")
 		So(err.Error(), ShouldContainSubstring, "/data/app.db")
 		So(err.Error(), ShouldContainSubstring, "O_RDWR")
 		So(err.Error(), ShouldContainSubstring, "synthetic open failure")

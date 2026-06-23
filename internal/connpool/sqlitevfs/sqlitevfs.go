@@ -26,9 +26,11 @@ const (
 )
 
 type Options struct {
-	ReadOnly         bool
-	JournalMode      string
-	ExclusiveLocking bool
+	ReadOnly bool
+	// JournalMode, when set, is the journal mode the database is normalized to
+	// (e.g. JournalModeDelete). When empty the database keeps its own mode, so a
+	// live database's WAL header is never silently rewritten.
+	JournalMode string
 }
 
 type RemoteFS interface {
@@ -58,9 +60,6 @@ func Open(ctx context.Context, remote RemoteFS, remotePath string, opts Options)
 	if remotePath == "" || !path.IsAbs(remotePath) {
 		return nil, nil, errors.New("remote SQLite path must be absolute")
 	}
-	if strings.EqualFold(opts.JournalMode, JournalModeWAL) && !opts.ExclusiveLocking {
-		return nil, nil, errors.New("remote SQLite WAL requires exclusive locking")
-	}
 
 	var lock *remoteLock
 	var err error
@@ -89,22 +88,34 @@ func Open(ctx context.Context, remote RemoteFS, remotePath string, opts Options)
 	}
 	db.SetMaxOpenConns(1)
 
-	if opts.ExclusiveLocking {
-		if _, err = db.ExecContext(ctx, "PRAGMA locking_mode=EXCLUSIVE"); err != nil {
-			return nil, nil, cleanupOpenError(db, name, lock, fmt.Errorf("set locking mode: %w", err))
-		}
+	// Remote SQLite is single-process: a writer holds the .opskat.lock and the pool
+	// is capped at one connection. EXCLUSIVE locking matches that and, crucially, lets
+	// SQLite open WAL databases without shared memory ("WAL without shm"). A remote VFS
+	// cannot back a real WAL-index — the -shm file is meaningless across hosts — so
+	// exclusive locking is the only way to read or write a WAL database. It must run
+	// before the database is first read.
+	if _, err = db.ExecContext(ctx, "PRAGMA locking_mode=EXCLUSIVE"); err != nil {
+		return nil, nil, cleanupOpenError(db, name, lock, fmt.Errorf("set locking mode: %w", err))
 	}
 
-	journalMode := opts.JournalMode
-	if journalMode == "" {
-		journalMode = JournalModeDelete
+	// Probe the journal mode: this forces the database open now — so an unreadable or
+	// missing database fails here with the VFS's detailed error, not on the first query
+	// — and tells us the database's current mode.
+	var currentJournal string
+	if err = db.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&currentJournal); err != nil {
+		return nil, nil, cleanupOpenError(db, name, lock, fmt.Errorf("read journal mode: %w", err))
 	}
-	var actualJournal string
-	if err = db.QueryRowContext(ctx, "PRAGMA journal_mode="+journalMode).Scan(&actualJournal); err != nil {
-		return nil, nil, cleanupOpenError(db, name, lock, fmt.Errorf("set journal mode: %w", err))
-	}
-	if !strings.EqualFold(actualJournal, journalMode) {
-		return nil, nil, cleanupOpenError(db, name, lock, fmt.Errorf("remote SQLite journal mode %s requested, got %s", journalMode, actualJournal))
+
+	// Only rewrite the journal mode when a caller explicitly asks for one; otherwise keep
+	// the database's own mode so we never silently rewrite a live WAL database's header.
+	if opts.JournalMode != "" && !strings.EqualFold(currentJournal, opts.JournalMode) {
+		var actualJournal string
+		if err = db.QueryRowContext(ctx, "PRAGMA journal_mode="+opts.JournalMode).Scan(&actualJournal); err != nil {
+			return nil, nil, cleanupOpenError(db, name, lock, fmt.Errorf("set journal mode: %w", err))
+		}
+		if !strings.EqualFold(actualJournal, opts.JournalMode) {
+			return nil, nil, cleanupOpenError(db, name, lock, fmt.Errorf("remote SQLite journal mode %s requested, got %s", opts.JournalMode, actualJournal))
+		}
 	}
 	if _, err = db.ExecContext(ctx, "PRAGMA synchronous=FULL"); err != nil {
 		return nil, nil, cleanupOpenError(db, name, lock, fmt.Errorf("set synchronous: %w", err))
