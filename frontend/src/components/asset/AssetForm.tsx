@@ -60,7 +60,7 @@ const DEFAULT_ICONS: Record<string, string> = {
   ssh: "server",
   mysql: "mysql",
   postgresql: "postgresql",
-  mssql: "database",
+  mssql: "sqlserver",
   sqlite: "sqlite",
   redis: "redis",
   mongodb: "mongodb",
