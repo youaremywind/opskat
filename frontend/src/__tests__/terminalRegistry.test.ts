@@ -21,6 +21,11 @@ const hoisted = vi.hoisted(() => {
   const linkProviderDisposeSpy = vi.fn();
   const attachUrlHighlighterSpy = vi.fn();
   const urlHighlighterDisposeSpy = vi.fn();
+  const queueUploadFilesSpy = vi.fn();
+  const zmodemAbortSpy = vi.fn();
+  const zmodemDisposeSpy = vi.fn();
+  const toastWarningSpy = vi.fn();
+  const toastErrorSpy = vi.fn();
   const disposeOrder: string[] = [];
   const state: {
     capturedOnKey: ((e: { key: string }) => void) | null;
@@ -28,10 +33,12 @@ const hoisted = vi.hoisted(() => {
       provideLinks: (bufferLineNumber: number, callback: (links: unknown[] | undefined) => void) => void;
     } | null;
     lines: Map<number, string>;
+    textarea: HTMLTextAreaElement | null;
   } = {
     capturedOnKey: null,
     linkProvider: null,
     lines: new Map(),
+    textarea: null,
   };
   return {
     eventHandlers,
@@ -54,7 +61,13 @@ const hoisted = vi.hoisted(() => {
     linkProviderDisposeSpy,
     attachUrlHighlighterSpy,
     urlHighlighterDisposeSpy,
+    queueUploadFilesSpy,
+    zmodemAbortSpy,
+    zmodemDisposeSpy,
+    toastWarningSpy,
+    toastErrorSpy,
     disposeOrder,
+    zmodemActive: false,
     state,
   };
 });
@@ -122,6 +135,7 @@ vi.mock("@xterm/xterm", () => {
     onWriteParsed = vi.fn(() => ({ dispose: vi.fn() }));
     onRender = vi.fn(() => ({ dispose: vi.fn() }));
     attachCustomKeyEventHandler = vi.fn();
+    textarea = document.createElement("textarea");
     registerLinkProvider = vi.fn((provider) => {
       hoisted.state.linkProvider = provider;
       return { dispose: hoisted.linkProviderDisposeSpy };
@@ -131,6 +145,7 @@ vi.mock("@xterm/xterm", () => {
       hoisted.disposeSpy();
     });
     constructor(options?: unknown) {
+      hoisted.state.textarea = this.textarea;
       hoisted.terminalCtor(options);
     }
   }
@@ -140,8 +155,10 @@ vi.mock("@xterm/xterm", () => {
 vi.mock("@/components/terminal/terminalInputBridge", () => ({
   createTerminalInputBridge: vi.fn(() => ({
     setShortcuts: vi.fn(),
-    setOnFilter: vi.fn(),
     setOnCopy: vi.fn(),
+    setOnPaste: vi.fn(),
+    setOnSelectAll: vi.fn(),
+    setOnFind: vi.fn(),
     dispose: vi.fn(() => {
       hoisted.disposeOrder.push("bridge");
       hoisted.bridgeDisposeSpy();
@@ -225,6 +242,23 @@ vi.mock("@/components/terminal/terminalUrlHighlighter", () => ({
   },
 }));
 
+vi.mock("@/components/terminal/zmodem/zmodemSession", () => ({
+  createZmodemController: vi.fn((opts: { toTerminal: (bytes: Uint8Array) => void }) => ({
+    consume: (bytes: Uint8Array) => opts.toTerminal(bytes),
+    isActive: () => hoisted.zmodemActive,
+    abort: hoisted.zmodemAbortSpy,
+    dispose: hoisted.zmodemDisposeSpy,
+    queueUploadFiles: hoisted.queueUploadFilesSpy,
+  })),
+}));
+
+vi.mock("sonner", () => ({
+  toast: {
+    warning: hoisted.toastWarningSpy,
+    error: hoisted.toastErrorSpy,
+  },
+}));
+
 vi.mock("@/stores/terminalStore", async (importActual) => {
   const actual = await importActual<typeof import("@/stores/terminalStore")>();
   return {
@@ -255,7 +289,9 @@ vi.mock("@/data/terminalFonts", () => ({
   withTerminalFontFallback: (s: string) => s,
   withTerminalFontIsolation: (_id: string, s: string) => s,
 }));
-vi.mock("@/lib/terminalEncode", () => ({ bytesToBase64: () => "" }));
+vi.mock("@/lib/terminalEncode", () => ({
+  bytesToBase64: (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes)),
+}));
 
 vi.mock("@/i18n", () => ({
   default: { t: (key: string) => `<<${key}>>` },
@@ -266,8 +302,10 @@ import {
   disposeTerminal,
   pasteIntoTerminal,
   pasteFromClipboard,
+  uploadFilesWithRz,
 } from "@/components/terminal/terminalRegistry";
 import { TRANSPORTS, transportForAsset, inferTransportFromSessionId } from "@/stores/terminalStore";
+import { WriteSSH } from "../../wailsjs/go/ssh/SSH";
 
 interface TestTerminalLink {
   text: string;
@@ -337,7 +375,59 @@ describe("terminalRegistry", () => {
     hoisted.linkProviderDisposeSpy.mockClear();
     hoisted.attachUrlHighlighterSpy.mockClear();
     hoisted.urlHighlighterDisposeSpy.mockClear();
+    hoisted.queueUploadFilesSpy.mockClear();
+    hoisted.zmodemAbortSpy.mockClear();
+    hoisted.zmodemDisposeSpy.mockClear();
+    hoisted.toastWarningSpy.mockClear();
+    hoisted.toastErrorSpy.mockClear();
+    hoisted.zmodemActive = false;
+    hoisted.state.textarea = null;
+    vi.mocked(WriteSSH).mockClear();
     hoisted.disposeOrder.length = 0;
+  });
+
+  it("queues dropped files and writes rz to an SSH terminal", async () => {
+    getOrCreateTerminal("sess-rz", { fontSize: 14, fontFamily: "mono", scrollback: 1000, transport: "ssh" });
+
+    await expect(uploadFilesWithRz("sess-rz", ["C:/tmp/a.txt"])).resolves.toBe(true);
+
+    expect(hoisted.queueUploadFilesSpy).toHaveBeenCalledWith(["C:/tmp/a.txt"]);
+    expect(WriteSSH).toHaveBeenCalledWith("sess-rz", btoa("rz\r"));
+    disposeTerminal("sess-rz");
+  });
+
+  it("does not start a second rz upload before the first one is detected", async () => {
+    getOrCreateTerminal("sess-rz-pending", { fontSize: 14, fontFamily: "mono", scrollback: 1000, transport: "ssh" });
+
+    await expect(uploadFilesWithRz("sess-rz-pending", ["C:/tmp/a.txt"])).resolves.toBe(true);
+    await expect(uploadFilesWithRz("sess-rz-pending", ["C:/tmp/b.txt"])).resolves.toBe(false);
+
+    expect(hoisted.toastWarningSpy).toHaveBeenCalledWith("<<zmodem.dragBusy>>");
+    expect(hoisted.queueUploadFilesSpy).toHaveBeenCalledTimes(1);
+    expect(WriteSSH).toHaveBeenCalledTimes(1);
+    disposeTerminal("sess-rz-pending");
+  });
+
+  it("does not start rz upload for non-SSH terminals", async () => {
+    getOrCreateTerminal("local-rz", { fontSize: 14, fontFamily: "mono", scrollback: 1000, transport: "local" });
+
+    await expect(uploadFilesWithRz("local-rz", ["C:/tmp/a.txt"])).resolves.toBe(false);
+
+    expect(hoisted.queueUploadFilesSpy).not.toHaveBeenCalled();
+    expect(WriteSSH).not.toHaveBeenCalled();
+    disposeTerminal("local-rz");
+  });
+
+  it("does not start rz upload while ZMODEM is active", async () => {
+    hoisted.zmodemActive = true;
+    getOrCreateTerminal("sess-rz-busy", { fontSize: 14, fontFamily: "mono", scrollback: 1000, transport: "ssh" });
+
+    await expect(uploadFilesWithRz("sess-rz-busy", ["C:/tmp/a.txt"])).resolves.toBe(false);
+
+    expect(hoisted.toastWarningSpy).toHaveBeenCalledWith("<<zmodem.dragBusy>>");
+    expect(hoisted.queueUploadFilesSpy).not.toHaveBeenCalled();
+    expect(WriteSSH).not.toHaveBeenCalled();
+    disposeTerminal("sess-rz-busy");
   });
 
   it("writes the i18n closed hint and marks closed when ssh:closed fires", () => {
@@ -407,6 +497,21 @@ describe("terminalRegistry", () => {
     link?.activate(undefined, link.text);
     expect(hoisted.browserOpenURLSpy).toHaveBeenCalledWith("https://help.ubuntu.com");
     disposeTerminal("sess-url");
+  });
+
+  it("does not open terminal links on right click", () => {
+    hoisted.state.lines.set(0, "Docs: https://help.ubuntu.com");
+    getOrCreateTerminal("sess-url-right-click", { fontSize: 14, fontFamily: "mono", scrollback: 1000 });
+
+    let links: TestTerminalLink[] | undefined;
+    hoisted.state.linkProvider?.provideLinks(1, (provided) => {
+      links = provided as TestTerminalLink[] | undefined;
+    });
+
+    const rightClick = new MouseEvent("mouseup", { button: 2 });
+    links?.[0].activate(rightClick, links[0].text);
+    expect(hoisted.browserOpenURLSpy).not.toHaveBeenCalled();
+    disposeTerminal("sess-url-right-click");
   });
 
   it("does not create links for bare IP addresses or numbers", () => {
@@ -500,6 +605,23 @@ describe("terminalRegistry", () => {
     expect(hoisted.pasteSpy).toHaveBeenCalledTimes(1);
     expect(hoisted.pasteSpy).toHaveBeenCalledWith(clip);
     disposeTerminal("sess-clip");
+  });
+
+  it("pasteFromClipboard can suppress the following native paste event to prevent duplicate paste", async () => {
+    getOrCreateTerminal("sess-clip-suppress", { fontSize: 14, fontFamily: "mono", scrollback: 1000 });
+    const textarea = hoisted.state.textarea;
+    expect(textarea).not.toBeNull();
+
+    hoisted.clipboardGetTextSpy.mockResolvedValue("echo once\n");
+    const pastePromise = pasteFromClipboard("sess-clip-suppress", { suppressNativePaste: true });
+    const nativePasteAllowed = textarea!.dispatchEvent(new ClipboardEvent("paste", { cancelable: true }));
+    await pastePromise;
+
+    expect(nativePasteAllowed).toBe(false);
+    expect(hoisted.clipboardGetTextSpy).toHaveBeenCalledTimes(1);
+    expect(hoisted.pasteSpy).toHaveBeenCalledTimes(1);
+    expect(hoisted.pasteSpy).toHaveBeenCalledWith("echo once\n");
+    disposeTerminal("sess-clip-suppress");
   });
 
   it("pasteFromClipboard does not paste when the clipboard is empty", async () => {

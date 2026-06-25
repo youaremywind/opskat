@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -33,6 +34,13 @@ const (
 	DriverPostgreSQL DatabaseDriver = "postgresql"
 	DriverMSSQL      DatabaseDriver = "mssql"
 	DriverSQLite     DatabaseDriver = "sqlite"
+)
+
+type SQLiteSource string
+
+const (
+	SQLiteSourceLocal        SQLiteSource = "local"
+	SQLiteSourceRemoteSSHVFS SQLiteSource = "remote_ssh_vfs"
 )
 
 // DefaultPort 返回驱动默认端口
@@ -130,7 +138,8 @@ type DatabaseConfig struct {
 	Params       string         `json:"params,omitempty"`        // 额外连接参数
 	ReadOnly     bool           `json:"read_only,omitempty"`     // 连接级只读
 	SSHAssetID   int64          `json:"ssh_asset_id,omitempty"`  // Deprecated: use Asset.SSHTunnelID
-	Path         string         `json:"path,omitempty"`          // SQLite 是本地嵌入式文件库，无 host/port 概念，路径独立字段；其他 driver 永远为空
+	SQLiteSource SQLiteSource   `json:"sqlite_source,omitempty"` // SQLite 文件来源: local(默认) / remote_ssh_vfs
+	Path         string         `json:"path,omitempty"`          // SQLite 文件路径;local 为本地绝对路径,remote_ssh_vfs 为远端绝对路径
 	Proxy        *ProxyConfig   `json:"proxy,omitempty"`         // SOCKS5 代理（与 SSH 隧道互斥，隧道优先）
 }
 
@@ -751,11 +760,27 @@ func (a *Asset) validateDatabase() error {
 		if cfg.Path == "" {
 			return errors.New("SQLite 必须指定 path")
 		}
-		if !filepath.IsAbs(cfg.Path) {
-			return errors.New("SQLite path 必须为绝对路径")
+		source := cfg.SQLiteSource
+		if source == "" {
+			source = SQLiteSourceLocal
 		}
-		if a.SSHTunnelID > 0 {
-			return errors.New("SQLite 不支持 SSH 隧道")
+		switch source {
+		case SQLiteSourceLocal:
+			if !filepath.IsAbs(cfg.Path) {
+				return errors.New("SQLite path 必须为绝对路径")
+			}
+			if a.SSHTunnelID > 0 || cfg.SSHAssetID > 0 {
+				return errors.New("SQLite 本地文件不支持 SSH 隧道")
+			}
+		case SQLiteSourceRemoteSSHVFS:
+			if !path.IsAbs(cfg.Path) {
+				return errors.New("SQLite path 必须为绝对路径")
+			}
+			if a.SSHTunnelID == 0 && cfg.SSHAssetID == 0 {
+				return errors.New("远端 SQLite 必须指定 SSH 资产")
+			}
+		default:
+			return fmt.Errorf("不支持的 SQLite source: %s", source)
 		}
 		if cfg.Proxy != nil {
 			return errors.New("SQLite 不支持代理")

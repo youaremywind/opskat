@@ -7,6 +7,7 @@ import {
   ZmodemBeginDownload,
   ZmodemAppendChunk,
   ZmodemFinishDownload,
+  ZmodemOpenUploadFiles,
   ZmodemPickUploadFiles,
   ZmodemReadChunk,
   ZmodemFinishUpload,
@@ -82,6 +83,7 @@ function makeController() {
 
 describe("zmodemSession controller", () => {
   beforeEach(() => {
+    vi.useRealTimers();
     vi.clearAllMocks();
     hoisted.sentryOpts = null as unknown as Record<string, (...a: unknown[]) => void>;
     useSFTPStore.setState({ transfers: {}, fileManagerOpenTabs: {}, fileManagerPaths: {} });
@@ -127,6 +129,7 @@ describe("zmodemSession controller", () => {
     expect(useSFTPStore.getState().transfers["z-1"].direction).toBe("download");
 
     offer.pushInput([10, 20, 30]);
+    await flush();
     expect(ZmodemAppendChunk).toHaveBeenCalledWith("z-1", bytesToBase64(new Uint8Array([10, 20, 30])));
 
     offer.finishAccept();
@@ -187,5 +190,108 @@ describe("zmodemSession controller", () => {
     expect(xfer.send).toHaveBeenCalledWith(new Uint8Array([1, 2, 3]));
     expect(xfer.end).toHaveBeenCalled();
     expect(useSFTPStore.getState().transfers["u-1"]?.direction).toBe("upload");
+  });
+
+  it("upload: queued drag files use OpenUploadFiles without opening picker", async () => {
+    vi.mocked(ZmodemOpenUploadFiles).mockResolvedValue([
+      { transferId: "u-2", name: "drag.txt", size: 2, mtime: 0 },
+    ] as never);
+    vi.mocked(ZmodemReadChunk)
+      .mockResolvedValueOnce({ data: bytesToBase64(new Uint8Array([4, 5])), eof: false } as never)
+      .mockResolvedValueOnce({ data: "", eof: true } as never);
+
+    const xfer = { send: vi.fn(), end: vi.fn().mockResolvedValue(undefined) };
+    const session = makeSendSession();
+    session.send_offer.mockResolvedValue(xfer);
+
+    const controller = makeController();
+    controller.queueUploadFiles(["C:/tmp/drag.txt"]);
+    hoisted.sentryOpts.on_detect({ confirm: () => session, deny: vi.fn() });
+
+    await vi.waitFor(() => expect(ZmodemFinishUpload).toHaveBeenCalledWith("u-2"));
+    expect(ZmodemOpenUploadFiles).toHaveBeenCalledWith("s1", ["C:/tmp/drag.txt"]);
+    expect(ZmodemPickUploadFiles).not.toHaveBeenCalled();
+    expect(session.send_offer).toHaveBeenCalledWith({ name: "drag.txt", size: 2, mtime: undefined });
+    expect(xfer.send).toHaveBeenCalledWith(new Uint8Array([4, 5]));
+    expect(xfer.end).toHaveBeenCalled();
+    expect(useSFTPStore.getState().transfers["u-2"]?.direction).toBe("upload");
+  });
+
+  it("upload: expired drag queue falls back to the picker", async () => {
+    vi.useFakeTimers();
+    vi.mocked(ZmodemPickUploadFiles).mockResolvedValue([
+      { transferId: "u-pick", name: "picked.txt", size: 0, mtime: 0 },
+    ] as never);
+    const session = makeSendSession();
+    session.send_offer.mockResolvedValue(undefined);
+
+    const controller = makeController();
+    controller.queueUploadFiles(["C:/tmp/stale.txt"]);
+    vi.advanceTimersByTime(10_001);
+    hoisted.sentryOpts.on_detect({ confirm: () => session, deny: vi.fn() });
+
+    await vi.waitFor(() => expect(ZmodemPickUploadFiles).toHaveBeenCalledWith("s1"));
+    expect(ZmodemOpenUploadFiles).not.toHaveBeenCalled();
+  });
+
+  it("sender forwards each protocol byte batch to write as base64 (ordering enforced by the transport)", () => {
+    // 出站字节的保序在 transport 层(orderedBySession)统一处理，见 orderedQueue.test.ts；
+    // 这里只验 sender 把 zmodem.js 产出的字节正确编码并转交注入的 write。
+    const write = vi.fn().mockResolvedValue(undefined);
+    createZmodemController({ sessionId: "s1", write, toTerminal: vi.fn() });
+
+    hoisted.sentryOpts.sender([1]);
+    hoisted.sentryOpts.sender([2, 3]);
+
+    expect(write).toHaveBeenNthCalledWith(1, "s1", bytesToBase64(new Uint8Array([1])));
+    expect(write).toHaveBeenNthCalledWith(2, "s1", bytesToBase64(new Uint8Array([2, 3])));
+  });
+
+  it("download serializes AppendChunk so the local file keeps received order", async () => {
+    vi.mocked(ZmodemBeginDownload).mockResolvedValue("z-ord");
+    let resolveAppend!: () => void;
+    vi.mocked(ZmodemAppendChunk)
+      .mockImplementationOnce(() => new Promise<void>((res) => (resolveAppend = res)))
+      .mockResolvedValue(undefined as never);
+    makeController();
+    const session = makeReceiveSession();
+    hoisted.sentryOpts.on_detect({ confirm: () => session, deny: vi.fn() });
+    const offer = makeOffer({ name: "a.bin", size: 6 });
+    session.fire("offer", offer);
+    await flush();
+
+    offer.pushInput([10, 20]);
+    offer.pushInput([30, 40]);
+    await flush();
+
+    // 第二块在第一块 AppendChunk resolve 前不得发起。
+    expect(ZmodemAppendChunk).toHaveBeenCalledTimes(1);
+    expect(ZmodemAppendChunk).toHaveBeenNthCalledWith(1, "z-ord", bytesToBase64(new Uint8Array([10, 20])));
+
+    resolveAppend();
+    await flush();
+    expect(ZmodemAppendChunk).toHaveBeenCalledTimes(2);
+    expect(ZmodemAppendChunk).toHaveBeenNthCalledWith(2, "z-ord", bytesToBase64(new Uint8Array([30, 40])));
+  });
+
+  it("upload cancel interrupts the remote rz process", async () => {
+    vi.mocked(ZmodemOpenUploadFiles).mockResolvedValue([
+      { transferId: "u-cancel", name: "drag.txt", size: 2, mtime: 0 },
+    ] as never);
+
+    const xfer = { send: vi.fn(), end: vi.fn().mockResolvedValue(undefined) };
+    const session = makeSendSession();
+    session.send_offer.mockResolvedValue(xfer);
+    const write = vi.fn().mockResolvedValue(undefined);
+    const controller = createZmodemController({ sessionId: "s1", write, toTerminal: vi.fn() });
+
+    controller.queueUploadFiles(["C:/tmp/drag.txt"]);
+    hoisted.sentryOpts.on_detect({ confirm: () => session, deny: vi.fn() });
+
+    await vi.waitFor(() => expect(useSFTPStore.getState().transfers["u-cancel"]).toBeDefined());
+    useSFTPStore.getState().cancelTransfer("u-cancel");
+
+    expect(session.abort).toHaveBeenCalled();
+    expect(write).toHaveBeenCalledWith("s1", bytesToBase64(new Uint8Array([3])));
   });
 });

@@ -4,12 +4,14 @@ import {
   ZmodemAppendChunk,
   ZmodemFinishDownload,
   ZmodemAbortDownload,
+  ZmodemOpenUploadFiles,
   ZmodemPickUploadFiles,
   ZmodemReadChunk,
   ZmodemFinishUpload,
   ZmodemAbortUpload,
 } from "../../../../wailsjs/go/ssh/SSH";
 import { bytesToBase64 } from "@/lib/terminalEncode";
+import { createOrderedQueue } from "@/lib/orderedQueue";
 import { useSFTPStore, type SFTPTransferTarget } from "@/stores/sftpStore";
 import { useTerminalStore } from "@/stores/terminalStore";
 import { notifySuccess } from "@/lib/notify";
@@ -18,6 +20,7 @@ import i18n from "@/i18n";
 // 每次从后端拉取/下发的分块大小。ZMODEM 子包不大，瓶颈在跨 Wails 边界的 base64，
 // 8KB 兼顾内存与事件量。
 const UPLOAD_CHUNK = 8 * 1024;
+const QUEUED_UPLOAD_TTL_MS = 10_000;
 
 export interface ZmodemController {
   /** 把一段终端入站字节喂给 Sentry：非 ZMODEM 透传到终端，ZMODEM 帧被截获驱动协议。 */
@@ -25,7 +28,9 @@ export interface ZmodemController {
   /** 是否有 ZMODEM 会话进行中（terminalRegistry 据此抑制键盘输入）。 */
   isActive: () => boolean;
   /** 主动中止当前会话与在途文件（Ctrl-C / 取消按钮）。 */
-  abort: () => void;
+  abort: (interruptRemote?: boolean) => void;
+  /** 暂存由终端拖拽传入的本地文件路径，供下一次 rz 会话消费。 */
+  queueUploadFiles: (paths: string[]) => void;
   /** 终端销毁/会话关闭时调用：中止并清理。 */
   dispose: () => void;
 }
@@ -54,11 +59,17 @@ export function createZmodemController(opts: ZmodemControllerOptions): ZmodemCon
   let currentSession: ZmodemSession | null = null;
   // 当前在途文件的后端清理回调（下载→AbortDownload 删残file / 上传→AbortUpload 关句柄）。
   let currentAbort: (() => void) | null = null;
+  let queuedUploadPaths: string[] = [];
+  let queuedUploadExpiresAt = 0;
+
+  // 下载分块按序写入本地文件。出站 PTY 字节流的保序由注入的 write
+  // (transport 层 orderedBySession)负责，这里只管下载这条独立的本地写流。
+  const appendQueue = createOrderedQueue();
 
   const sentry: ZmodemSentry = new Zmodem.Sentry({
     to_terminal: (octets) => toTerminal(toUint8(octets)),
     sender: (octets) => {
-      write(sessionId, bytesToBase64(toUint8(octets))).catch(console.error);
+      write(sessionId, bytesToBase64(toUint8(octets))).catch((e) => console.error("zmodem write error", e));
     },
     on_retract: () => {
       // 握手被收回（探测到的 ZMODEM 其实不是）：无在途状态可清，留待下次。
@@ -88,7 +99,11 @@ export function createZmodemController(opts: ZmodemControllerOptions): ZmodemCon
     currentAbort = null;
   }
 
-  function abort() {
+  function interruptRemoteCommand() {
+    write(sessionId, bytesToBase64(new Uint8Array([3]))).catch(console.error);
+  }
+
+  function abort(interruptRemote = true) {
     // 先捕获再清空，避免 session.abort() 同步触发 session_end→cleanup 把 currentAbort 抢先置空，
     // 导致后端残file 清理被跳过。
     const backendAbort = currentAbort;
@@ -102,6 +117,12 @@ export function createZmodemController(opts: ZmodemControllerOptions): ZmodemCon
       }
     }
     if (backendAbort) backendAbort();
+    if (interruptRemote && session) interruptRemoteCommand();
+  }
+
+  function queueUploadFiles(paths: string[]) {
+    queuedUploadPaths = paths;
+    queuedUploadExpiresAt = paths.length > 0 ? Date.now() + QUEUED_UPLOAD_TTL_MS : 0;
   }
 
   function handleDetect(detection: ZmodemDetection) {
@@ -160,11 +181,17 @@ export function createZmodemController(opts: ZmodemControllerOptions): ZmodemCon
     };
 
     offer.on("input", (payload) => {
-      ZmodemAppendChunk(transferId, bytesToBase64(toUint8(payload))).catch(console.error);
+      appendQueue.push(() =>
+        ZmodemAppendChunk(transferId, bytesToBase64(toUint8(payload))).catch((e) =>
+          console.error("zmodem append error", e)
+        )
+      );
     });
 
     try {
       await offer.accept();
+      // accept() resolve 时分块多半仍在队列在途；先排空再收尾，避免文件被提前关闭而截断。
+      await appendQueue.drain();
       await ZmodemFinishDownload(transferId);
       notifySuccess(i18n.t("zmodem.downloadComplete", { name }));
     } catch (e) {
@@ -179,11 +206,18 @@ export function createZmodemController(opts: ZmodemControllerOptions): ZmodemCon
 
   async function startSend(session: ZmodemSession, target: SFTPTransferTarget) {
     let files: Array<{ transferId: string; name: string; size: number; mtime: number }> = [];
+    const queuedPaths = queuedUploadExpiresAt > Date.now() ? queuedUploadPaths : [];
+    queuedUploadPaths = [];
+    queuedUploadExpiresAt = 0;
     try {
-      // 弹原生多选对话框并逐个打开句柄；用户取消返回空列表。
-      files = await ZmodemPickUploadFiles(sessionId);
+      if (queuedPaths.length > 0) {
+        files = await ZmodemOpenUploadFiles(sessionId, queuedPaths);
+      } else {
+        // 弹原生多选对话框并逐个打开句柄；用户取消返回空列表。
+        files = await ZmodemPickUploadFiles(sessionId);
+      }
     } catch (e) {
-      console.error("zmodem pick upload files failed", e);
+      console.error("zmodem open upload files failed", e);
     }
     if (!files || files.length === 0) {
       try {
@@ -257,8 +291,9 @@ export function createZmodemController(opts: ZmodemControllerOptions): ZmodemCon
     consume,
     isActive: () => active,
     abort,
+    queueUploadFiles,
     dispose: () => {
-      abort();
+      abort(false);
       cleanup();
     },
   };
