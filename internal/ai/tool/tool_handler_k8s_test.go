@@ -1,6 +1,11 @@
 package tool
 
 import (
+	"context"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/opskat/opskat/internal/model/entity/asset_entity"
@@ -37,4 +42,43 @@ func TestBuildK8sCommandPlan(t *testing.T) {
 			So(err, ShouldNotBeNil)
 		})
 	})
+}
+
+func TestExecuteK8sCommandLocalFindsHomebrewKubectlWhenPathIsMinimal(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("Homebrew kubectl PATH fallback is macOS-specific")
+	}
+
+	kubectlPath := firstExistingExecutable(
+		"/opt/homebrew/bin/kubectl",
+		"/usr/local/bin/kubectl",
+	)
+	if kubectlPath == "" {
+		t.Skip("Homebrew kubectl is not installed")
+	}
+
+	kubectlDir := filepath.Dir(kubectlPath)
+	t.Setenv("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+	if strings.Contains(os.Getenv("PATH"), kubectlDir) {
+		t.Fatalf("test PATH unexpectedly contains kubectl dir %s", kubectlDir)
+	}
+
+	out, err := executeK8sCommandLocal(context.Background(), "apiVersion: v1\nkind: Config\n", []string{"version", "--client=true", "--output=yaml"})
+
+	if err != nil {
+		t.Fatalf("execute k8s command locally: %v", err)
+	}
+	if !strings.Contains(out, "clientVersion:") {
+		t.Fatalf("expected kubectl client version output, got %q", out)
+	}
+}
+
+func firstExistingExecutable(paths ...string) string {
+	for _, path := range paths {
+		info, err := os.Stat(path)
+		if err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
+			return path
+		}
+	}
+	return ""
 }
