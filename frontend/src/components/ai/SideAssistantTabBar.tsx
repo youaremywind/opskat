@@ -2,6 +2,8 @@ import { LoaderCircle, X, ChevronsRight, ChevronsLeft, Plus } from "lucide-react
 import { cn, Button, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@opskat/ui";
 import { useTranslation } from "react-i18next";
 import type { SidebarAITab, SidebarTabStatus } from "@/stores/aiStore";
+import { useAssetStore } from "@/stores/assetStore";
+import { AssetIcon, type AssetIconProps } from "@/components/asset/AssetIcon";
 import { getSessionIconColor, getSessionIconLetter } from "./sessionIconColor";
 
 interface SideAssistantTabBarProps {
@@ -16,11 +18,29 @@ interface SideAssistantTabBarProps {
 }
 
 const statusDotColor: Record<Exclude<SidebarTabStatus, null>, string> = {
-  waiting_approval: "bg-amber-500",
-  running: "bg-sky-500",
-  done: "bg-emerald-500",
-  error: "bg-rose-500",
+  waiting_approval: "bg-warning",
+  running: "bg-info",
+  done: "bg-success",
+  error: "bg-destructive",
 };
+
+/** 头像内容：绑定资产 → 渲染资产图标（真实图标 + 颜色）；否则回退标题首字。折叠/展开两处复用。 */
+function renderAvatarContent(
+  tabId: string,
+  assets: AssetIconProps["assets"],
+  assetId: number | null | undefined,
+  fallbackType: string | undefined,
+  letter: string
+) {
+  if (assetId != null) {
+    return (
+      <span data-testid={`session-asset-icon-${tabId}`}>
+        <AssetIcon assets={assets} assetId={assetId} fallbackType={fallbackType} className="h-3.5 w-3.5" />
+      </span>
+    );
+  }
+  return letter;
+}
 
 export function SideAssistantTabBar({
   tabs,
@@ -33,6 +53,7 @@ export function SideAssistantTabBar({
   onToggleCollapsed,
 }: SideAssistantTabBarProps) {
   const { t } = useTranslation();
+  const assets = useAssetStore((s) => s.assets);
 
   return (
     <TooltipProvider delayDuration={300}>
@@ -86,7 +107,8 @@ export function SideAssistantTabBar({
             const titleText = tab.title || t("ai.newConversation");
             const isBlank = tab.conversationId == null;
             const letter = isBlank ? "?" : getSessionIconLetter(titleText);
-            const color = isBlank ? null : getSessionIconColor(titleText);
+            const bound = tab.linkedAssetId != null;
+            const color = isBlank || bound ? null : getSessionIconColor(titleText);
             const statusSuffix = status ? ` · ${t(`ai.sidebar.statusSuffix.${status}`)}` : "";
 
             const handleAuxClick = (e: React.MouseEvent) => {
@@ -111,11 +133,12 @@ export function SideAssistantTabBar({
                         className={cn(
                           "relative flex h-7 w-7 items-center justify-center rounded-md text-xs font-bold transition-transform hover:scale-105",
                           isActive && "ring-2 ring-primary ring-offset-1 ring-offset-sidebar",
+                          bound && "bg-muted/70 text-foreground",
                           isBlank && "border border-dashed border-muted-foreground/40 text-muted-foreground/70"
                         )}
                         style={color ? { background: color.bg, color: color.fg } : undefined}
                       >
-                        {letter}
+                        {renderAvatarContent(tab.id, assets, tab.linkedAssetId, tab.linkedAssetType, letter)}
                         {status && (
                           <span
                             className={cn(
@@ -175,15 +198,16 @@ export function SideAssistantTabBar({
                   <span
                     className={cn(
                       "relative flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-xs font-bold",
+                      bound && "bg-muted/70 text-foreground",
                       isBlank && "border border-dashed border-muted-foreground/40 text-muted-foreground/70"
                     )}
                     style={color ? { background: color.bg, color: color.fg } : undefined}
                   >
-                    {letter}
+                    {renderAvatarContent(tab.id, assets, tab.linkedAssetId, tab.linkedAssetType, letter)}
                     {status === "running" ? (
                       <LoaderCircle
                         aria-hidden="true"
-                        className="absolute -bottom-1 -right-1 h-3 w-3 animate-spin text-sky-500"
+                        className="absolute -bottom-1 -right-1 h-3 w-3 animate-spin text-info"
                       />
                     ) : status ? (
                       <span

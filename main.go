@@ -17,12 +17,15 @@ import (
 	"github.com/opskat/opskat/internal/app/kafka"
 	"github.com/opskat/opskat/internal/app/local"
 	"github.com/opskat/opskat/internal/app/opsctl"
+	"github.com/opskat/opskat/internal/app/oss"
 	"github.com/opskat/opskat/internal/app/query"
+	"github.com/opskat/opskat/internal/app/rdp"
 	"github.com/opskat/opskat/internal/app/redis"
 	"github.com/opskat/opskat/internal/app/serial"
 	"github.com/opskat/opskat/internal/app/ssh"
 	"github.com/opskat/opskat/internal/app/sshadapt"
 	"github.com/opskat/opskat/internal/app/system"
+	"github.com/opskat/opskat/internal/app/vnc"
 
 	aitool "github.com/opskat/opskat/internal/ai/tool"
 	_ "github.com/opskat/opskat/internal/assettype"
@@ -37,6 +40,7 @@ import (
 	"github.com/opskat/opskat/internal/service/sftp_svc"
 	"github.com/opskat/opskat/internal/service/snippet_svc"
 	"github.com/opskat/opskat/internal/service/ssh_svc"
+	"github.com/opskat/opskat/internal/service/vnc_svc"
 	"github.com/opskat/opskat/internal/sshpool"
 	extpkg "github.com/opskat/opskat/pkg/extension"
 	skillplugin "github.com/opskat/opskat/plugin"
@@ -96,6 +100,9 @@ func main() {
 	}
 	windowWidth, windowHeight := initialWindowSize(bootstrap.GetConfig())
 
+	// 把持久化的 SSH/TCP 连接调优注入全局，使首个连接即采用用户配置。
+	system.ApplySSHTuning(bootstrap.GetConfig())
+
 	// 初始化日志（读取 DebugMode 配置决定 level；桌面应用需要文件日志）
 	if err := bootstrap.InitLogger(); err != nil {
 		log.Fatalf("初始化日志失败: %v", err)
@@ -119,6 +126,7 @@ func main() {
 	})
 	serialMgr := serial_svc.NewManager()
 	localMgr := localterm_svc.NewManager()
+	vncMgr := vnc_svc.NewManager(asset_repo.Asset())
 	poolDialer := &sshadapt.PoolDialer{}
 	pool := sshpool.NewPool(poolDialer, 5*time.Minute)
 	proxyServer := sshpool.NewServer(pool, authToken)
@@ -137,11 +145,14 @@ func main() {
 	sshB := ssh.New(appCtx, sys, sshMgr, sftpSvc, pool)
 	queryB := query.New(appCtx, sys, pool)
 	redisB := redis.New(appCtx, sys, pool)
+	rdpB := rdp.New(sys, pool)
 	etcdB := etcd.New(appCtx, sys, pool)
+	ossB := oss.New(appCtx, sys)
 	kafkaB := kafka.New(appCtx, sys, pool)
 	k8sB := k8s.New(appCtx, sys, pool)
 	serialB := serial.New(appCtx, sys, serialMgr)
 	localB := local.New(appCtx, sys, localMgr)
+	vncB := vnc.New(appCtx, vncMgr)
 	aiB := ai.New(appCtx, sys, pool)
 	opsctlB := opsctl.New(appCtx, sys, sys, proxyServer)
 	opsctlB.SetAuthToken(authToken)
@@ -153,7 +164,7 @@ func main() {
 	aiB.SetSerialManager(serialMgr)
 	aiB.SetWindowActivator(sys)
 
-	binders := []Lifecycle{sys, sshB, queryB, redisB, etcdB, kafkaB, k8sB, serialB, localB, aiB, opsctlB, extB, extEditB}
+	binders := []Lifecycle{sys, sshB, queryB, redisB, rdpB, etcdB, kafkaB, k8sB, serialB, localB, vncB, aiB, opsctlB, extB, extEditB, ossB}
 
 	appOptions := &options.App{
 		Title:     "OpsKat",
@@ -194,7 +205,7 @@ func main() {
 			pool.Close()
 		},
 		Bind: []interface{}{
-			sys, sshB, queryB, redisB, etcdB, kafkaB, k8sB, serialB, localB, aiB, opsctlB, extB, extEditB,
+			sys, sshB, queryB, redisB, rdpB, etcdB, kafkaB, k8sB, serialB, localB, vncB, aiB, opsctlB, extB, extEditB, ossB,
 		},
 		DragAndDrop: &options.DragAndDrop{
 			EnableFileDrop:     true,

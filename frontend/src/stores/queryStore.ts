@@ -1,8 +1,8 @@
 import { create } from "zustand";
-import { ExecuteSQL } from "../../wailsjs/go/query/Query";
+import { ExecuteSQL, GetTableMetadata, ListDatabaseObjects } from "../../wailsjs/go/query/Query";
 import { RedisGetKeyDetail, RedisListDatabases, RedisScanKeys } from "../../wailsjs/go/redis/Redis";
 import { ListMongoDatabases, ListMongoCollections } from "../../wailsjs/go/query/Query";
-import { asset_entity } from "../../wailsjs/go/models";
+import { asset_entity, query_svc } from "../../wailsjs/go/models";
 import { useTabStore, registerTabCloseHook, registerTabRestoreHook, type QueryTabMeta } from "./tabStore";
 import { useAssetStore } from "./assetStore";
 
@@ -13,7 +13,7 @@ export interface QueryTab {
   assetId: number;
   assetName: string;
   assetIcon: string;
-  assetType: "database" | "redis" | "mongodb" | "kafka" | "k8s" | "etcd";
+  assetType: "database" | "redis" | "mongodb" | "kafka" | "k8s" | "etcd" | "oss";
   driver?: string; // "mysql" | "postgresql" | "sqlite" | "mssql"
   defaultDatabase?: string;
   redisDatabase?: number;
@@ -43,6 +43,8 @@ export interface DatabaseTabState {
   innerTabs: InnerTab[];
   activeInnerTabId: string | null;
   error: string | null;
+  tableMeta?: Record<string, query_svc.TableMetadata>; // "db.table" -> metadata
+  objects?: Record<string, query_svc.DatabaseObjects>; // db -> objects
 }
 
 const REDIS_PAGE_SIZE = 100;
@@ -121,6 +123,8 @@ interface QueryState {
   updateInnerTab: (tabId: string, innerTabId: string, patch: Record<string, unknown>) => void;
   markTableTabLoaded: (tabId: string, innerTabId: string) => void;
   addSqlHistory: (tabId: string, innerTabId: string, sql: string) => void;
+  loadTableMeta: (tabId: string, database: string, table: string) => Promise<void>;
+  loadObjects: (tabId: string, database: string) => Promise<void>;
 
   // Redis actions
   scanKeys: (tabId: string, reset?: boolean) => Promise<void>;
@@ -164,6 +168,8 @@ function defaultDbState(): DatabaseTabState {
     innerTabs: [],
     activeInnerTabId: null,
     error: null,
+    tableMeta: {},
+    objects: {},
   };
 }
 
@@ -438,7 +444,7 @@ export const useQueryStore = create<QueryState>((set, get) => ({
         assetId: asset.ID,
         assetName: asset.Name,
         assetIcon: asset.Icon || "",
-        assetType: asset.Type as "database" | "redis" | "mongodb" | "kafka" | "k8s" | "etcd",
+        assetType: asset.Type as "database" | "redis" | "mongodb" | "kafka" | "k8s" | "etcd" | "oss",
         driver,
         defaultDatabase,
         redisDatabase,
@@ -502,7 +508,7 @@ export const useQueryStore = create<QueryState>((set, get) => ({
       // Also refresh tables for already-expanded databases that still exist,
       // otherwise the top-level refresh button leaves stale table lists.
       const expanded = get().dbStates[tabId]?.expandedDbs ?? [];
-      await Promise.all(expanded.filter((db) => databases.includes(db)).map((db) => get().loadTables(tabId, db)));
+      await Promise.all(expanded.filter((db) => databases.includes(db)).map((db) => get().refreshTables(tabId, db)));
     } catch (err) {
       set((s) => ({
         dbStates: {
@@ -582,6 +588,7 @@ export const useQueryStore = create<QueryState>((set, get) => ({
     const state = get().dbStates[tabId];
     if (!state) return;
     await get().loadTables(tabId, database);
+    await get().loadObjects(tabId, database);
   },
 
   toggleDbExpand: (tabId, database) => {
@@ -738,6 +745,54 @@ export const useQueryStore = create<QueryState>((set, get) => ({
         },
       },
     }));
+  },
+
+  loadTableMeta: async (tabId, database, table) => {
+    const tab = getQueryTabFromTabStore(tabId);
+    if (!tab) return;
+    try {
+      const meta = await GetTableMetadata(tab.assetId, database, table);
+      set((s) => ({
+        dbStates: {
+          ...s.dbStates,
+          [tabId]: {
+            ...s.dbStates[tabId],
+            tableMeta: { ...(s.dbStates[tabId].tableMeta ?? {}), [`${database}.${table}`]: meta },
+          },
+        },
+      }));
+    } catch (err) {
+      set((s) => ({
+        dbStates: {
+          ...s.dbStates,
+          [tabId]: { ...s.dbStates[tabId], error: String(err) },
+        },
+      }));
+    }
+  },
+
+  loadObjects: async (tabId, database) => {
+    const tab = getQueryTabFromTabStore(tabId);
+    if (!tab) return;
+    try {
+      const objects = await ListDatabaseObjects(tab.assetId, database);
+      set((s) => ({
+        dbStates: {
+          ...s.dbStates,
+          [tabId]: {
+            ...s.dbStates[tabId],
+            objects: { ...(s.dbStates[tabId].objects ?? {}), [database]: objects },
+          },
+        },
+      }));
+    } catch (err) {
+      set((s) => ({
+        dbStates: {
+          ...s.dbStates,
+          [tabId]: { ...s.dbStates[tabId], error: String(err) },
+        },
+      }));
+    }
   },
 
   // --- Redis ---

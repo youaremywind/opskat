@@ -41,17 +41,17 @@ const TIME_PRESETS = [
 function decisionSourceBadge(source: string): { label: string; className: string } {
   switch (source) {
     case "policy_allow":
-      return { label: "policy", className: "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300" };
+      return { label: "policy", className: "bg-success/15 text-success" };
     case "policy_deny":
-      return { label: "policy", className: "bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300" };
+      return { label: "policy", className: "bg-destructive/15 text-destructive" };
     case "user_allow":
-      return { label: "user", className: "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300" };
+      return { label: "user", className: "bg-success/15 text-success" };
     case "user_deny":
-      return { label: "user", className: "bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300" };
+      return { label: "user", className: "bg-destructive/15 text-destructive" };
     case "grant_allow":
-      return { label: "grant", className: "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300" };
+      return { label: "grant", className: "bg-info/15 text-info" };
     case "grant_deny":
-      return { label: "grant", className: "bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300" };
+      return { label: "grant", className: "bg-destructive/15 text-destructive" };
     default:
       return { label: source || "-", className: "bg-muted" };
   }
@@ -115,45 +115,70 @@ export function AuditLogPage() {
     return 0;
   }, [timeRange, customEnd]);
 
-  const fetchLogs = useCallback(async () => {
-    setLoading(true);
-    try {
-      const startTime = computeStartTime();
-      const endTime = computeEndTime();
-      const result = await ListAuditLogs("", 0, startTime, endTime, page * PAGE_SIZE, PAGE_SIZE, sessionFilter);
-      setLogs(result?.items || []);
-      setTotal(result?.total || 0);
-    } finally {
-      setLoading(false);
-    }
+  // 查询并写入日志:setState 全部在 promise 回调中,effect 直接调用不会同步 setState
+  const loadLogs = useCallback(() => {
+    const startTime = computeStartTime();
+    const endTime = computeEndTime();
+    return ListAuditLogs("", 0, startTime, endTime, page * PAGE_SIZE, PAGE_SIZE, sessionFilter)
+      .then((result) => {
+        setLogs(result?.items || []);
+        setTotal(result?.total || 0);
+      })
+      .finally(() => {
+        setLoading(false);
+      });
   }, [sessionFilter, computeStartTime, computeEndTime, page]);
 
-  useEffect(() => {
-    fetchLogs();
-  }, [fetchLogs]);
+  // 手动刷新(事件路径):同步置 loading 后拉取
+  const fetchLogs = useCallback(() => {
+    setLoading(true);
+    return loadLogs();
+  }, [loadLogs]);
 
-  // 加载会话列表
-  const fetchSessions = useCallback(async () => {
-    try {
-      const startTime = computeStartTime();
-      const result = await ListAuditSessions(startTime);
-      setSessions(result || []);
-    } catch {
-      setSessions([]);
-    }
+  // 查询条件变化(含首次挂载)时在渲染期置 loading,对比键覆盖 loadLogs 的全部输入
+  const [prevQuery, setPrevQuery] = useState<{
+    sessionFilter: string;
+    timeRange: string;
+    customStart: string;
+    customEnd: string;
+    page: number;
+  } | null>(null);
+  if (
+    prevQuery === null ||
+    prevQuery.sessionFilter !== sessionFilter ||
+    prevQuery.timeRange !== timeRange ||
+    prevQuery.customStart !== customStart ||
+    prevQuery.customEnd !== customEnd ||
+    prevQuery.page !== page
+  ) {
+    setPrevQuery({ sessionFilter, timeRange, customStart, customEnd, page });
+    setLoading(true);
+  }
+
+  useEffect(() => {
+    void loadLogs();
+  }, [loadLogs]);
+
+  // 加载会话列表:async 体定义在 effect 内,setState 都发生在 await 之后
+  useEffect(() => {
+    const fetchSessions = async () => {
+      try {
+        const startTime = computeStartTime();
+        const result = await ListAuditSessions(startTime);
+        setSessions(result || []);
+      } catch {
+        setSessions([]);
+      }
+    };
+    void fetchSessions();
   }, [computeStartTime]);
 
-  useEffect(() => {
-    fetchSessions();
-  }, [fetchSessions]);
-
-  const fetchPool = useCallback(async () => {
-    try {
-      const entries = await GetSSHPoolConnections();
-      setPoolEntries(entries || []);
-    } catch {
-      setPoolEntries([]);
-    }
+  // 拉取连接池:setState 在 promise 回调中,effect 与刷新按钮共用
+  const fetchPool = useCallback(() => {
+    return GetSSHPoolConnections().then(
+      (entries) => setPoolEntries(entries || []),
+      () => setPoolEntries([])
+    );
   }, []);
 
   useEffect(() => {
@@ -344,15 +369,15 @@ export function AuditLogPage() {
         <>
           {/* Session 已允许模式汇总 */}
           {sessionApprovedPatterns.length > 0 && (
-            <div className="px-4 py-2 border-b bg-blue-50 dark:bg-blue-950/30 text-xs">
-              <span className="font-medium text-blue-700 dark:text-blue-300">{t("audit.sessionPatterns")}:</span>
+            <div className="px-4 py-2 border-b bg-info/10 text-xs">
+              <span className="font-medium text-info">{t("audit.sessionPatterns")}:</span>
               <div className="flex flex-wrap gap-1.5 mt-1">
                 {sessionApprovedPatterns.map((p, i) => (
                   <span
                     key={i}
-                    className="inline-flex items-center gap-1 bg-blue-100 dark:bg-blue-900/50 text-blue-800 dark:text-blue-200 px-2 py-0.5 rounded font-mono"
+                    className="inline-flex items-center gap-1 bg-info/15 text-info px-2 py-0.5 rounded font-mono"
                   >
-                    {p.asset !== "-" && <span className="text-blue-500">{p.asset}:</span>}
+                    {p.asset !== "-" && <span className="text-info">{p.asset}:</span>}
                     {p.patterns}
                   </span>
                 ))}
@@ -408,7 +433,7 @@ export function AuditLogPage() {
                       </td>
                       <td className="px-4 py-2 text-center">
                         {log.Success === 1 ? (
-                          <CheckCircle2 className="h-4 w-4 text-green-500 mx-auto" />
+                          <CheckCircle2 className="h-4 w-4 text-success mx-auto" />
                         ) : (
                           <XCircle className="h-4 w-4 text-destructive mx-auto" />
                         )}
@@ -478,9 +503,7 @@ export function AuditLogPage() {
                   <td className="px-4 py-2">
                     <span
                       className={`inline-block px-1.5 py-0.5 text-xs rounded font-mono ${
-                        entry.ref_count > 0
-                          ? "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300"
-                          : "bg-muted"
+                        entry.ref_count > 0 ? "bg-success/15 text-success" : "bg-muted"
                       }`}
                     >
                       {entry.ref_count}
@@ -513,7 +536,7 @@ export function AuditLogPage() {
                 <div>
                   <span className="text-muted-foreground">{t("audit.result")}:</span>{" "}
                   {detailLog.Success === 1 ? (
-                    <span className="text-green-500">{t("audit.success")}</span>
+                    <span className="text-success">{t("audit.success")}</span>
                   ) : (
                     <span className="text-destructive">{t("audit.failed")}</span>
                   )}

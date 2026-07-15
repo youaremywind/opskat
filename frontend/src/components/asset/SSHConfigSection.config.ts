@@ -1,8 +1,10 @@
 import type { CredentialFragment } from "./credentialConfig";
 import {
   CONNECTION_DEFAULTS,
+  buildProxyChainJSON,
   buildProxyJSON,
   parseConnectionFields,
+  type ProxyChainJSON,
   type ConnectionFormFields,
   type ProxyConfigJSON,
 } from "./proxyConfig";
@@ -18,6 +20,9 @@ interface SSHConfig {
   private_key_passphrase?: string;
   jump_host_id?: number;
   proxy?: ProxyConfigJSON | null;
+  proxy_chain?: ProxyChainJSON | null;
+  keepalive_interval_seconds?: number;
+  restore_cwd_on_reconnect?: boolean;
 }
 
 /** ssh 表单子状态(凭据中的 password 走 useAssetCredential,不入此 state)。 */
@@ -34,6 +39,10 @@ export interface SSHFormState extends ConnectionFormFields {
   privateKeyPassphrase: string;
   /** 编辑态既有 passphrase 密文;passphrase 不回显。 */
   encryptedPrivateKeyPassphrase: string;
+  /** 覆盖该资产的 SSH 空闲保活间隔(秒)。0 = 跟随全局默认。 */
+  keepAliveIntervalSeconds: number;
+  /** 开启后断线手动重连时自动 cd 回上次目录(连接时自动启用目录同步追踪 cwd)。 */
+  restoreCwdOnReconnect: boolean;
 }
 
 export const SSH_DEFAULTS: SSHFormState = {
@@ -46,6 +55,8 @@ export const SSH_DEFAULTS: SSHFormState = {
   selectedKeyPaths: [],
   privateKeyPassphrase: "",
   encryptedPrivateKeyPassphrase: "",
+  keepAliveIntervalSeconds: 0,
+  restoreCwdOnReconnect: false,
   ...CONNECTION_DEFAULTS,
 };
 
@@ -59,6 +70,7 @@ export interface SSHBuildOptions {
   passphrase: string;
   /** proxy 密码(save=密文 / test=明文,已由调用方解析)。 */
   proxyPassword: string;
+  proxyChainSecrets?: Record<string, { password?: string; token?: string }>;
   /** jumphost 隧道是否写入 config.jump_host_id:save 为 false(走 asset 顶层),test 为 true。 */
   includeJumpHost: boolean;
 }
@@ -93,6 +105,18 @@ export function buildSSHConfig(state: SSHFormState, opts: SSHBuildOptions): stri
   if (proxy) {
     cfg.proxy = proxy;
   }
+  const proxyChain = buildProxyChainJSON(state.proxyChainLayers, opts.proxyChainSecrets);
+  if (proxyChain) cfg.proxy_chain = proxyChain;
+
+  // 0 = 跟随全局默认，不写入 config(omitempty 语义)。
+  if (state.keepAliveIntervalSeconds > 0) {
+    cfg.keepalive_interval_seconds = state.keepAliveIntervalSeconds;
+  }
+
+  // false = 关闭，不写入 config(omitempty 语义)。
+  if (state.restoreCwdOnReconnect) {
+    cfg.restore_cwd_on_reconnect = true;
+  }
 
   return JSON.stringify(cfg);
 }
@@ -114,7 +138,9 @@ export function parseSSHConfig(configJSON: string, assetTunnelId = 0): SSHFormSt
       selectedKeyPaths: cfg.private_keys || [],
       privateKeyPassphrase: "", // passphrase 已加密,不回显
       encryptedPrivateKeyPassphrase: cfg.private_key_passphrase || "",
-      ...parseConnectionFields(cfg.proxy, tunnelId),
+      keepAliveIntervalSeconds: cfg.keepalive_interval_seconds || 0,
+      restoreCwdOnReconnect: cfg.restore_cwd_on_reconnect || false,
+      ...parseConnectionFields(cfg.proxy, tunnelId, cfg.proxy_chain),
     };
   } catch {
     return { ...SSH_DEFAULTS };

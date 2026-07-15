@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Button,
@@ -27,7 +27,7 @@ import { toast } from "sonner";
 import { notifySuccess } from "@/lib/notify";
 import { ExecuteSQL } from "../../../wailsjs/go/query/Query";
 import { OpenDirectory } from "../../../wailsjs/go/system/System";
-import { SelectTableExportFile, WriteTableExportFile } from "../../../wailsjs/go/query/Query";
+import { ExportTableToXlsx, SelectTableExportFile, WriteTableExportFile } from "../../../wailsjs/go/query/Query";
 import {
   buildTableExportContent,
   buildTableExportSelectSql,
@@ -68,6 +68,7 @@ const exportMeta: Record<TableExportFormat, { label: string; extension: string; 
     csv: { label: "CSV", extension: "csv", filterName: "CSV Files", pattern: "*.csv" },
     tsv: { label: "TSV", extension: "tsv", filterName: "Text Files", pattern: "*.tsv" },
     sql: { label: "SQL", extension: "sql", filterName: "SQL Files", pattern: "*.sql" },
+    xlsx: { label: "Excel", extension: "xlsx", filterName: "Excel Files", pattern: "*.xlsx" },
   };
 
 type TableExportEncoding = "utf-8" | "utf-8-bom" | "gb18030" | "gbk" | "big5" | "shift-jis" | "utf-16le";
@@ -142,6 +143,8 @@ export function ExportTableDataDialog({
   columns,
   rows,
   totalRows,
+  page,
+  pageSize,
   whereClause,
   orderByClause,
   sortColumn,
@@ -161,22 +164,30 @@ export function ExportTableDataDialog({
   const [completed, setCompleted] = useState(false);
   const [logLines, setLogLines] = useState<string[]>([]);
 
-  useEffect(() => {
-    if (!open) return;
-    setFormat(initialFormat);
-    setSelectedColumns((prev) => {
-      const retained = prev.filter((column) => columns.includes(column));
-      return retained.length > 0 ? retained : columns;
-    });
-    setEncoding("utf-8");
-    setExportOptions({
-      ...defaultExportOptions,
-      fieldDelimiter: initialFormat === "tsv" ? "tab" : "comma",
-    });
-    setFilePath("");
-    setCompleted(false);
-    setLogLines([]);
-  }, [columns, initialFormat, open]);
+  // 打开(或 columns/initialFormat 变化)时回填导出选项:渲染期对比上次值,替代 effect 里的级联 setState。
+  const [prevSync, setPrevSync] = useState<{
+    open: boolean;
+    columns?: string[];
+    initialFormat?: TableExportFormat;
+  }>({ open: false });
+  if (open !== prevSync.open || columns !== prevSync.columns || initialFormat !== prevSync.initialFormat) {
+    setPrevSync({ open, columns, initialFormat });
+    if (open) {
+      setFormat(initialFormat);
+      setSelectedColumns((prev) => {
+        const retained = prev.filter((column) => columns.includes(column));
+        return retained.length > 0 ? retained : columns;
+      });
+      setEncoding("utf-8");
+      setExportOptions({
+        ...defaultExportOptions,
+        fieldDelimiter: initialFormat === "tsv" ? "tab" : "comma",
+      });
+      setFilePath("");
+      setCompleted(false);
+      setLogLines([]);
+    }
+  }
 
   const meta = exportMeta[format];
   const defaultFilename = useMemo(() => {
@@ -252,6 +263,34 @@ export function ExportTableDataDialog({
       let processedRows = 0;
       appendLog(`[EXP] Export table [${table}]`);
       appendLog(`[EXP] Export to - ${filePath}`);
+
+      // XLSX is binary and streamed server-side: build the scope/column-aware
+      // SELECT and let the Go side write the workbook directly to filePath.
+      if (format === "xlsx") {
+        appendLog("[EXP] Streaming workbook ...");
+        const selectSql = buildTableExportSelectSql({
+          database,
+          table,
+          driver,
+          scope,
+          whereClause,
+          orderByClause,
+          sortColumn,
+          sortDir,
+          page,
+          pageSize,
+          columns: selectedColumns,
+        });
+        await ExportTableToXlsx(assetId, database, selectSql, filePath);
+        processedRows = estimatedRows;
+        const elapsed = ((performance.now() - startedAt) / 1000).toFixed(3);
+        appendLog(`[EXP] Processed ~${processedRows} row(s) in ${elapsed}s`);
+        appendLog("[EXP] Finished successfully");
+        setCompleted(true);
+        notifySuccess(t("query.exportSuccessDetailed", { count: processedRows }));
+        return;
+      }
+
       if (scope === "all") {
         appendLog("[EXP] Getting all data ...");
         let chunkIndex = 0;
@@ -327,12 +366,15 @@ export function ExportTableDataDialog({
     database,
     driver,
     encoding,
+    estimatedRows,
     exportOptions,
     filePath,
     format,
     includeHeaders,
     meta.label,
     orderByClause,
+    page,
+    pageSize,
     rows,
     scope,
     selectedColumns,
@@ -409,6 +451,9 @@ export function ExportTableDataDialog({
                   <SelectItem value="sql" className="text-xs">
                     SQL
                   </SelectItem>
+                  <SelectItem value="xlsx" className="text-xs">
+                    Excel
+                  </SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -437,7 +482,11 @@ export function ExportTableDataDialog({
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="grid gap-1.5">
                 <Label className="text-xs">{t("query.exportEncoding")}</Label>
-                <Select value={encoding} onValueChange={(value) => setEncoding(value as TableExportEncoding)}>
+                <Select
+                  value={encoding}
+                  disabled={format === "xlsx" || exporting}
+                  onValueChange={(value) => setEncoding(value as TableExportEncoding)}
+                >
                   <SelectTrigger size="sm" className="h-8 text-xs">
                     <SelectValue />
                   </SelectTrigger>

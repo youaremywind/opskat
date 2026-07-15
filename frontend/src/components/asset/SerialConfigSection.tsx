@@ -1,9 +1,11 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Button, Input, Label, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@opskat/ui";
+import { Button, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@opskat/ui";
 import { RefreshCw } from "lucide-react";
+import { Field } from "@/components/asset/fields";
+import { useConfigSection } from "@/components/asset/useConfigSection";
 import { ListSerialPorts } from "../../../wailsjs/go/serial/Serial";
-import type { AssetFormHandle, ConfigSectionProps } from "@/lib/assetTypes/formContract";
+import type { ConfigSectionProps } from "@/lib/assetTypes/formContract";
 import {
   buildSerialConfig,
   parseSerialConfig,
@@ -29,60 +31,54 @@ const PARITY_OPTIONS = ["none", "odd", "even", "mark", "space"];
 // 因为 go.bug.st/serial v1.6.4 自身不暴露这条配置，而 nativeOpen 会强制关闭它。
 const FLOW_CONTROL_OPTIONS = ["none", "hardware"];
 
-export const SerialConfigSection = forwardRef<AssetFormHandle, ConfigSectionProps>(function SerialConfigSection(
-  { editAsset, onValidityChange },
-  ref
-) {
+export function SerialConfigSection({ editAsset, onValidityChange, ref }: ConfigSectionProps) {
   const { t } = useTranslation();
   const [ports, setPorts] = useState<SerialPortInfo[]>([]);
-  const [loadingPorts, setLoadingPorts] = useState(false);
+  // 挂载即拉取端口列表,loading 初值直接为 true
+  const [loadingPorts, setLoadingPorts] = useState(true);
+  // 刷新计数:刷新按钮 bump 触发下方 effect 重新拉取
+  const [portsFetchToken, setPortsFetchToken] = useState(0);
   const [customMode, setCustomMode] = useState(false);
-  const [state, setState] = useState<SerialFormState>(() =>
-    editAsset ? parseSerialConfig(editAsset.Config) : { ...SERIAL_DEFAULTS }
-  );
-
-  const patch = (p: Partial<SerialFormState>) => setState((s) => ({ ...s, ...p }));
-
-  const fetchPorts = useCallback(async () => {
-    setLoadingPorts(true);
-    try {
-      const list = await ListSerialPorts();
-      setPorts(list || []);
-    } catch {
-      setPorts([]);
-    } finally {
-      setLoadingPorts(false);
-    }
-  }, []);
+  const { state, patch } = useConfigSection<SerialFormState>({
+    ref,
+    editAsset,
+    onValidityChange,
+    init: (a) => (a ? parseSerialConfig(a.Config) : { ...SERIAL_DEFAULTS }),
+    validate: (s) => {
+      const ok = !!s.portPath.trim();
+      return { canTest: ok, canSave: ok, saveDisabledReason: ok ? "" : "asset.formMissingSerialPort" };
+    },
+    build: async (s) => ({ configJSON: buildSerialConfig(s), sshTunnelId: 0 }),
+    buildTest: async (s) => ({ assetType: "serial", configJSON: buildSerialConfig(s), password: "" }),
+  });
 
   useEffect(() => {
-    fetchPorts();
-  }, [fetchPorts]);
+    const fetchPorts = async () => {
+      try {
+        const list = await ListSerialPorts();
+        setPorts(list || []);
+      } catch {
+        setPorts([]);
+      } finally {
+        setLoadingPorts(false);
+      }
+    };
+    void fetchPorts();
+  }, [portsFetchToken]);
+
+  // 刷新按钮：事件路径先置 loading，再 bump token 让上面的 effect 重新拉取
+  const refreshPorts = () => {
+    setLoadingPorts(true);
+    setPortsFetchToken((n) => n + 1);
+  };
 
   // 已保存的端口在当前列表里没出现时（设备拔走、跨平台路径等），自动切到手动输入模式，
   // 让用户能看到原值。注意：这里只单向"开"不"关"——一旦进入手动模式就保留，
   // 用户主动从下拉里选了某个端口才会通过 handlePortSelect 切回非手动模式。
-  // 这样刷新串口列表不会把正在编辑的内容覆盖掉。
-  useEffect(() => {
-    if (state.portPath && !ports.some((p) => p.name === state.portPath)) {
-      setCustomMode(true);
-    }
-  }, [ports, state.portPath]);
-
-  // serial 保存与测试都要 port_path;上报反应式校验 + 缺端口提示(onValidityChange 为壳 setState,身份稳定)。
-  useEffect(() => {
-    const ok = !!state.portPath.trim();
-    onValidityChange({ canTest: ok, canSave: ok, saveDisabledReason: ok ? "" : "asset.formMissingSerialPort" });
-  }, [state.portPath, onValidityChange]);
-
-  useImperativeHandle(
-    ref,
-    () => ({
-      buildConfig: async () => ({ configJSON: buildSerialConfig(state), sshTunnelId: 0 }),
-      buildTestConfig: async () => ({ assetType: "serial", configJSON: buildSerialConfig(state), password: "" }),
-    }),
-    [state]
-  );
+  // 这样刷新串口列表不会把正在编辑的内容覆盖掉。（渲染期单向 latch，自终止）
+  if (!customMode && state.portPath && !ports.some((p) => p.name === state.portPath)) {
+    setCustomMode(true);
+  }
 
   const selectValue = customMode ? CUSTOM_PORT : state.portPath;
 
@@ -96,24 +92,28 @@ export const SerialConfigSection = forwardRef<AssetFormHandle, ConfigSectionProp
   };
 
   return (
-    <div className="grid gap-3 border rounded-lg p-4">
-      <div className="grid gap-2">
-        <div className="flex items-center justify-between">
-          <Label>{t("asset.serialPortPath")}</Label>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="h-6 px-2 text-xs"
-            onClick={fetchPorts}
-            disabled={loadingPorts}
-          >
-            <RefreshCw className={`h-3 w-3 mr-1 ${loadingPorts ? "animate-spin" : ""}`} />
-            {t("asset.serialRefreshPorts")}
-          </Button>
-        </div>
+    <div className="flex flex-col gap-4">
+      <Field
+        label={
+          <span className="flex w-full items-center justify-between">
+            {t("asset.serialPortPath")}
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="-my-1 h-6 px-2 text-xs"
+              onClick={refreshPorts}
+              disabled={loadingPorts}
+            >
+              <RefreshCw className={`h-3 w-3 mr-1 ${loadingPorts ? "animate-spin" : ""}`} />
+              {t("asset.serialRefreshPorts")}
+            </Button>
+          </span>
+        }
+        required
+      >
         <Select value={selectValue} onValueChange={handlePortSelect}>
-          <SelectTrigger>
+          <SelectTrigger className="w-full">
             <SelectValue placeholder={t("asset.serialPortPathPlaceholder")} />
           </SelectTrigger>
           <SelectContent>
@@ -136,16 +136,15 @@ export const SerialConfigSection = forwardRef<AssetFormHandle, ConfigSectionProp
             value={state.portPath}
             onChange={(e) => patch({ portPath: e.target.value })}
             placeholder={t("asset.serialPortPathPlaceholder")}
-            className="font-mono"
+            className="mt-2 font-mono"
           />
         )}
-      </div>
+      </Field>
 
-      <div className="grid grid-cols-2 gap-3">
-        <div className="grid gap-2">
-          <Label>{t("asset.serialBaudRate")}</Label>
+      <div className="flex items-end gap-3">
+        <Field label={t("asset.serialBaudRate")} className="flex-1">
           <Select value={String(state.baudRate)} onValueChange={(v) => patch({ baudRate: Number(v) })}>
-            <SelectTrigger>
+            <SelectTrigger className="w-full">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -156,11 +155,10 @@ export const SerialConfigSection = forwardRef<AssetFormHandle, ConfigSectionProp
               ))}
             </SelectContent>
           </Select>
-        </div>
-        <div className="grid gap-2">
-          <Label>{t("asset.serialDataBits")}</Label>
+        </Field>
+        <Field label={t("asset.serialDataBits")} className="flex-1">
           <Select value={String(state.dataBits)} onValueChange={(v) => patch({ dataBits: Number(v) })}>
-            <SelectTrigger>
+            <SelectTrigger className="w-full">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -171,14 +169,13 @@ export const SerialConfigSection = forwardRef<AssetFormHandle, ConfigSectionProp
               ))}
             </SelectContent>
           </Select>
-        </div>
+        </Field>
       </div>
 
-      <div className="grid grid-cols-3 gap-3">
-        <div className="grid gap-2">
-          <Label>{t("asset.serialStopBits")}</Label>
+      <div className="flex items-end gap-3">
+        <Field label={t("asset.serialStopBits")} className="flex-1">
           <Select value={state.stopBits} onValueChange={(v) => patch({ stopBits: v })}>
-            <SelectTrigger>
+            <SelectTrigger className="w-full">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -189,11 +186,10 @@ export const SerialConfigSection = forwardRef<AssetFormHandle, ConfigSectionProp
               ))}
             </SelectContent>
           </Select>
-        </div>
-        <div className="grid gap-2">
-          <Label>{t("asset.serialParity")}</Label>
+        </Field>
+        <Field label={t("asset.serialParity")} className="flex-1">
           <Select value={state.parity} onValueChange={(v) => patch({ parity: v })}>
-            <SelectTrigger>
+            <SelectTrigger className="w-full">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -204,11 +200,10 @@ export const SerialConfigSection = forwardRef<AssetFormHandle, ConfigSectionProp
               ))}
             </SelectContent>
           </Select>
-        </div>
-        <div className="grid gap-2">
-          <Label>{t("asset.serialFlowControl")}</Label>
+        </Field>
+        <Field label={t("asset.serialFlowControl")} className="flex-1">
           <Select value={state.flowControl} onValueChange={(v) => patch({ flowControl: v })}>
-            <SelectTrigger>
+            <SelectTrigger className="w-full">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -219,8 +214,8 @@ export const SerialConfigSection = forwardRef<AssetFormHandle, ConfigSectionProp
               ))}
             </SelectContent>
           </Select>
-        </div>
+        </Field>
       </div>
     </div>
   );
-});
+}

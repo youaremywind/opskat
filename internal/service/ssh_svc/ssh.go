@@ -3,8 +3,10 @@ package ssh_svc
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"sort"
 	"sync"
@@ -12,8 +14,10 @@ import (
 
 	"github.com/opskat/opskat/internal/model/entity/asset_entity"
 	"github.com/opskat/opskat/internal/pkg/dirsync"
+	"github.com/opskat/opskat/internal/pkg/proxychain"
 	"github.com/opskat/opskat/internal/pkg/socksdial"
 	"github.com/opskat/opskat/internal/pkg/sshkeepalive"
+	"github.com/opskat/opskat/internal/pkg/sshtuning"
 	"github.com/opskat/opskat/internal/service/sessionid"
 
 	"github.com/cago-frame/cago/pkg/logger"
@@ -31,13 +35,13 @@ type sharedClient struct {
 	stopKeepalive func()
 }
 
-func newSharedClient(client *ssh.Client, closers []io.Closer) *sharedClient {
+func newSharedClient(client *ssh.Client, closers []io.Closer, keepAliveSeconds int) *sharedClient {
 	sc := &sharedClient{
 		client:   client,
 		refCount: 1,
 		closers:  closers,
 	}
-	sc.stopKeepalive = sshkeepalive.Start(client, sshkeepalive.Interval)
+	sc.stopKeepalive = sshkeepalive.Start(client, sshtuning.ResolveKeepAlive(keepAliveSeconds))
 	return sc
 }
 
@@ -98,8 +102,7 @@ type Session struct {
 	parserRemainder    []byte
 	echoSuppressions   [][]byte
 	echoSuppressionIdx int
-	internalScriptEcho bool
-	internalEchoDropLn bool
+	echoWrapPending    bool // a terminal-autowrap CR ended a chunk; skip the re-emitted char next
 	syncToken          string
 	promptNonce        string
 	promptPendingNonce string
@@ -107,7 +110,6 @@ type Session struct {
 	syncDirty          bool
 	syncBootstrapCh    chan struct{} // closed when EnableSync receives init:pid; nil when not bootstrapping
 	syncProbeActive    bool
-	internalScriptSeq  int
 	probeShellStateFn  func(int) (shellProbeResult, error)
 }
 
@@ -147,8 +149,10 @@ func (s *Session) Close() {
 		return
 	}
 	s.closed = true
-	if err := s.session.Close(); err != nil {
-		logger.Default().Warn("close session", zap.String("sessionID", s.ID), zap.Error(err))
+	if s.session != nil {
+		if err := s.session.Close(); err != nil {
+			logger.Default().Warn("close session", zap.String("sessionID", s.ID), zap.Error(err))
+		}
 	}
 	s.shared.release()
 	if s.onClosed != nil {
@@ -170,62 +174,26 @@ func (s *Session) IsClosed() bool {
 
 func (s *Session) writeInternal(data []byte) error {
 	pattern := s.queueInternalEchoSuppression(data)
-
-	s.mu.Lock()
-	closed := s.closed
-	var err error
-	if !closed {
-		_, err = s.stdin.Write(data)
-	}
-	s.mu.Unlock()
-
-	if closed {
-		s.removeQueuedEchoSuppression(pattern)
-		return fmt.Errorf("session is closed")
-	}
-	if err != nil {
-		// 部分写入也要清掉队列项：截断的远端回显匹配不到完整 pattern，
+	if err := s.writeStdin(data); err != nil {
+		// 部分写入/关闭都要清掉队列项：截断的远端回显匹配不到完整 pattern，
 		// 留在队列里会误吞后续无关输出。
 		s.removeQueuedEchoSuppression(pattern)
+		return err
 	}
-	return err
+	return nil
 }
 
-func (s *Session) nextInternalScriptPath() string {
-	s.syncMu.Lock()
-	defer s.syncMu.Unlock()
-	s.internalScriptSeq++
-	return fmt.Sprintf("/tmp/.opskat-sync-%d-%d.sh", time.Now().UnixNano(), s.internalScriptSeq)
-}
-
-func (s *Session) writeInternalScript(script string) error {
-	if script == "" {
-		return fmt.Errorf("internal script is empty")
-	}
-	return s.writeInternalTempScript(s.nextInternalScriptPath(), script)
-}
-
-func (s *Session) writeInternalTempScript(tempPath string, script string) error {
-	command := buildSourceTempScriptCommand(tempPath, script)
-	s.beginInternalScriptEchoSuppression()
-
+// writeStdin writes raw bytes to the shell stdin without queueing echo
+// suppression. Callers that need to track the suppression pattern themselves
+// (EnableSync, so it can drop the pattern on a failed enable) use this plus
+// queueInternalEchoSuppression directly.
+func (s *Session) writeStdin(data []byte) error {
 	s.mu.Lock()
-	closed := s.closed
-	var err error
-	if !closed {
-		_, err = s.stdin.Write([]byte(command))
-	}
-	s.mu.Unlock()
-
-	if closed {
-		s.endInternalScriptEchoSuppression()
+	defer s.mu.Unlock()
+	if s.closed {
 		return fmt.Errorf("session is closed")
 	}
-	if err != nil {
-		// 同 writeInternal：写失败（含部分写入）都要关掉脚本回显抑制，
-		// 否则后续输出会被持续吞掉。
-		s.endInternalScriptEchoSuppression()
-	}
+	_, err := s.stdin.Write(data)
 	return err
 }
 
@@ -271,9 +239,22 @@ type ConnectConfig struct {
 	JumpHosts []JumpHostEntry
 	// 代理
 	Proxy *asset_entity.ProxyConfig
+	// 代理链：非空时优先于旧 JumpHosts/Proxy。
+	ProxyChain []proxychain.Layer
 
 	// 主机密钥校验回调（nil 则跳过校验）
 	HostKeyVerifyFunc HostKeyVerifyFunc
+
+	// KeepAliveIntervalSeconds 覆盖此连接的 SSH 空闲保活心跳间隔（秒）。
+	// 0 = 跟随全局默认（sshtuning）。
+	KeepAliveIntervalSeconds int
+
+	// RestoreCwdOnReconnect 为该资产开启「重连恢复上次目录」时为真：连接建立后
+	// 自动启用目录同步以持续追踪 cwd，并在 InitialWorkdir 非空时 cd 回上次目录。
+	RestoreCwdOnReconnect bool
+	// InitialWorkdir 仅在重连路径由前端携带上次已知 cwd；首次连接为空。
+	// 实际是否恢复由 RestoreCwdOnReconnect 权威闸门决定。
+	InitialWorkdir string
 }
 
 // JumpHostEntry 跳板机连接信息
@@ -305,11 +286,27 @@ func (m *Manager) Dial(cfg ConnectConfig) (*ssh.Client, []io.Closer, error) {
 		User:            cfg.Username,
 		Auth:            authMethods,
 		HostKeyCallback: MakeHostKeyCallback(cfg.Host, cfg.Port, cfg.HostKeyVerifyFunc),
-		Timeout:         30 * time.Second,
+		Timeout:         sshtuning.Get().DialTimeoutOrDefault(),
 	}
 
 	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
-	return m.dial(cfg, sshConfig, addr)
+	client, closers, err := m.dial(cfg, sshConfig, addr)
+	if err != nil {
+		return nil, nil, err
+	}
+	// 非终端连接（连接池 / 端口转发 / AI）的 keepalive 由本函数负责：把 stop 作为
+	// 首个 closer 交回调用方，调用方关闭 closers 时即停止心跳，无需各池自管。
+	stop := sshkeepalive.Start(client, sshtuning.ResolveKeepAlive(cfg.KeepAliveIntervalSeconds))
+	closers = append([]io.Closer{closerFunc(stop)}, closers...)
+	return client, closers, nil
+}
+
+// closerFunc 把一个无返回值的停止函数适配成 io.Closer，便于随 closers 统一关闭。
+type closerFunc func()
+
+func (f closerFunc) Close() error {
+	f()
+	return nil
 }
 
 // Connect 建立 SSH 连接并启动 PTY 会话
@@ -324,7 +321,7 @@ func (m *Manager) Connect(cfg ConnectConfig) (string, error) {
 		User:            cfg.Username,
 		Auth:            authMethods,
 		HostKeyCallback: MakeHostKeyCallback(cfg.Host, cfg.Port, cfg.HostKeyVerifyFunc),
-		Timeout:         30 * time.Second,
+		Timeout:         sshtuning.Get().DialTimeoutOrDefault(),
 	}
 
 	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
@@ -337,7 +334,7 @@ func (m *Manager) Connect(cfg ConnectConfig) (string, error) {
 		return "", err
 	}
 
-	shared := newSharedClient(client, extraClosers)
+	shared := newSharedClient(client, extraClosers, cfg.KeepAliveIntervalSeconds)
 
 	emitProgress(&cfg, "shell", "正在启动终端...")
 
@@ -347,7 +344,66 @@ func (m *Manager) Connect(cfg ConnectConfig) (string, error) {
 		return "", err
 	}
 
+	if cfg.RestoreCwdOnReconnect {
+		if sess, ok := m.GetSession(sessionID); ok {
+			// 恢复：重连时 cd 回上次目录（首次连接 InitialWorkdir 为空 → no-op）。
+			if err := sess.RestoreWorkingDirectory(cfg.InitialWorkdir); err != nil {
+				logger.Default().Warn("restore cwd on reconnect failed",
+					zap.String("sessionID", sessionID), zap.String("cwd", cfg.InitialWorkdir), zap.Error(err))
+			}
+			// 捕获：延迟后自动启用目录同步，持续追踪 cwd 供下次重连。
+			go m.autoEnableDirectorySync(sess)
+		}
+	}
+
 	return sessionID, nil
+}
+
+// ConnectClient 建立仅用于 SFTP/端口转发等非终端用途的 SSH 会话 ID。
+// 它不创建 PTY 和 shell，但会注册到 Manager sessions，供 SFTP 服务按 sessionID 复用。
+func (m *Manager) ConnectClient(cfg ConnectConfig) (string, error) {
+	authMethods, err := buildAuthMethods(cfg.AuthType, cfg.Password, cfg.Key, cfg.KeyPassphrase, cfg.PrivateKeys, cfg.OnAuthChallenge)
+	if err != nil {
+		return "", err
+	}
+	sshConfig := &ssh.ClientConfig{
+		User:            cfg.Username,
+		Auth:            authMethods,
+		HostKeyCallback: MakeHostKeyCallback(cfg.Host, cfg.Port, cfg.HostKeyVerifyFunc),
+		Timeout:         sshtuning.Get().DialTimeoutOrDefault(),
+	}
+	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
+	client, extraClosers, err := m.dial(cfg, sshConfig, addr)
+	if err != nil {
+		return "", err
+	}
+	shared := newSharedClient(client, extraClosers, cfg.KeepAliveIntervalSeconds)
+	sessionID := m.nextSessionID()
+	m.sessions.Store(sessionID, &Session{
+		ID:       sessionID,
+		AssetID:  cfg.AssetID,
+		shared:   shared,
+		onClosed: cfg.OnClosed,
+	})
+	return sessionID, nil
+}
+
+// autoSyncSettleDelay 是自动启用目录同步前的等待，让 sshd 的 motd/首个 prompt 先落地，
+// 避免注入的 hook 脚本与其交错。设为变量便于测试缩短。
+var autoSyncSettleDelay = 1 * time.Second
+
+// autoEnableDirectorySync 在会话稳定后自动启用目录同步（用于「重连恢复上次目录」的 cwd 捕获）。
+// best-effort：不支持的 shell / 超时只记 Warn，不影响会话本身。
+func (m *Manager) autoEnableDirectorySync(sess *Session) {
+	time.Sleep(autoSyncSettleDelay)
+	if sess.IsClosed() {
+		return
+	}
+	logger.Default().Info("auto-enable directory sync for cwd restore", zap.String("sessionID", sess.ID))
+	if err := sess.EnableSync(); err != nil {
+		logger.Default().Warn("auto-enable directory sync failed",
+			zap.String("sessionID", sess.ID), zap.Error(err))
+	}
 }
 
 // createSession 在 sharedClient 上创建新的 SSH 会话（PTY + shell）
@@ -454,6 +510,27 @@ func (m *Manager) NewSessionFrom(existingSessionID string, cols, rows int,
 func (m *Manager) dial(cfg ConnectConfig, sshConfig *ssh.ClientConfig, targetAddr string) (*ssh.Client, []io.Closer, error) {
 	var closers []io.Closer
 
+	if len(cfg.ProxyChain) > 0 {
+		emitProgress(&cfg, "connect", "正在通过代理链连接...")
+		conn, err := proxychain.Chain{
+			Layers: cfg.ProxyChain,
+			Direct: dialTCP,
+		}.Dial(context.Background(), targetAddr)
+		if err != nil {
+			return nil, nil, err
+		}
+		closers = append(closers, conn)
+		emitProgress(&cfg, "auth", "正在认证...")
+		c, chans, reqs, err := ssh.NewClientConn(conn, targetAddr, sshConfig)
+		if err != nil {
+			if closeErr := conn.Close(); closeErr != nil {
+				logger.Default().Warn("close proxy chain connection after handshake failure", zap.Error(closeErr))
+			}
+			return nil, nil, fmt.Errorf("SSH握手失败: %w", err)
+		}
+		return ssh.NewClient(c, chans, reqs), closers, nil
+	}
+
 	// 情况1: 有跳板机链
 	if len(cfg.JumpHosts) > 0 {
 		return m.dialViaJumpHosts(cfg, sshConfig, targetAddr)
@@ -481,11 +558,34 @@ func (m *Manager) dial(cfg ConnectConfig, sshConfig *ssh.ClientConfig, targetAdd
 
 	// 情况3: 直连
 	emitProgress(&cfg, "auth", "正在认证...")
-	client, err := ssh.Dial("tcp", targetAddr, sshConfig)
+	conn, err := dialTCP(context.Background(), targetAddr)
 	if err != nil {
 		return nil, nil, fmt.Errorf("SSH连接失败: %w", err)
 	}
-	return client, nil, nil
+	c, chans, reqs, err := ssh.NewClientConn(conn, targetAddr, sshConfig)
+	if err != nil {
+		if closeErr := conn.Close(); closeErr != nil {
+			logger.Default().Warn("close connection after handshake failure", zap.Error(closeErr))
+		}
+		return nil, nil, fmt.Errorf("SSH连接失败: %w", err)
+	}
+	return ssh.NewClient(c, chans, reqs), nil, nil
+}
+
+// dialTCP 建立到 addr 的底层 TCP 连接，并按 sshtuning 配置施加 TCP_NODELAY /
+// SO_KEEPALIVE / 连接超时。仅对真正的 TCP 套接字生效；经 SOCKS5 代理或跳板机
+// 通道的连接不是 *net.TCPConn，TCP 选项无法触达（保活/超时仍通过 SSH 层与
+// ClientConfig.Timeout 兜底）。
+func dialTCP(ctx context.Context, addr string) (net.Conn, error) {
+	s := sshtuning.Get()
+	conn, err := s.Dialer().DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.ApplyTCPOptions(conn); err != nil {
+		logger.Default().Warn("apply TCP options", zap.String("addr", addr), zap.Error(err))
+	}
+	return conn, nil
 }
 
 // dialViaJumpHosts 通过跳板机链连接目标
@@ -506,7 +606,7 @@ func (m *Manager) dialViaJumpHosts(cfg ConnectConfig, targetConfig *ssh.ClientCo
 		User:            firstJump.Username,
 		Auth:            firstAuth,
 		HostKeyCallback: MakeHostKeyCallback(firstJump.Host, firstJump.Port, cfg.HostKeyVerifyFunc),
-		Timeout:         30 * time.Second,
+		Timeout:         sshtuning.Get().DialTimeoutOrDefault(),
 	}
 
 	var currentClient *ssh.Client
@@ -528,10 +628,18 @@ func (m *Manager) dialViaJumpHosts(cfg ConnectConfig, targetConfig *ssh.ClientCo
 		}
 		currentClient = ssh.NewClient(c, chans, reqs)
 	} else {
-		currentClient, err = ssh.Dial("tcp", firstAddr, firstConfig)
+		conn, err := dialTCP(context.Background(), firstAddr)
 		if err != nil {
 			return nil, nil, fmt.Errorf("连接跳板机失败: %w", err)
 		}
+		c, chans, reqs, err := ssh.NewClientConn(conn, firstAddr, firstConfig)
+		if err != nil {
+			if closeErr := conn.Close(); closeErr != nil {
+				logger.Default().Warn("close jump host connection after handshake failure", zap.Error(closeErr))
+			}
+			return nil, nil, fmt.Errorf("连接跳板机失败: %w", err)
+		}
+		currentClient = ssh.NewClient(c, chans, reqs)
 	}
 	closers = append(closers, currentClient)
 
@@ -555,7 +663,7 @@ func (m *Manager) dialViaJumpHosts(cfg ConnectConfig, targetConfig *ssh.ClientCo
 			User:            jump.Username,
 			Auth:            jumpAuth,
 			HostKeyCallback: MakeHostKeyCallback(jump.Host, jump.Port, cfg.HostKeyVerifyFunc),
-			Timeout:         30 * time.Second,
+			Timeout:         sshtuning.Get().DialTimeoutOrDefault(),
 		}
 
 		conn, err := currentClient.Dial("tcp", jumpAddr)
@@ -681,6 +789,10 @@ func buildAuthMethods(authType, password, key, keyPassphrase string, privateKeyP
 	return methods, nil
 }
 
+func BuildAuthMethodsForProxyChain(authType, password, key, keyPassphrase string, privateKeyPaths []string) ([]ssh.AuthMethod, error) {
+	return buildAuthMethods(authType, password, key, keyPassphrase, privateKeyPaths, nil)
+}
+
 // parsePrivateKey 解析私钥，支持 passphrase
 func parsePrivateKey(data []byte, passphrase string) (ssh.Signer, error) {
 	// 先尝试无 passphrase 解析
@@ -756,6 +868,19 @@ func (m *Manager) readOutput(sess *Session) {
 					sess.parserRemainder = nil
 				}
 				flush()
+				// Log the disconnect reason. io.EOF is the remote closing the
+				// channel cleanly (user `exit`, or a server-side idle logout
+				// such as sshd ClientAlive*/shell TMOUT, which client keepalive
+				// cannot prevent). Anything else (reset/timeout) is an abnormal
+				// transport drop. This is the one place that knows *why* a
+				// session ended — without it diagnosis is blind.
+				if errors.Is(r.err, io.EOF) {
+					logger.Default().Info("ssh session ended: remote closed channel",
+						zap.String("sessionID", sess.ID), zap.Int64("assetID", sess.AssetID))
+				} else {
+					logger.Default().Warn("ssh session dropped: transport read error",
+						zap.String("sessionID", sess.ID), zap.Int64("assetID", sess.AssetID), zap.Error(r.err))
+				}
 				return
 			}
 			filtered := sess.filterOutput(r.data)
@@ -841,7 +966,7 @@ func (m *Manager) TestConnection(ctx context.Context, cfg ConnectConfig) error {
 		User:            cfg.Username,
 		Auth:            authMethods,
 		HostKeyCallback: MakeHostKeyCallback(cfg.Host, cfg.Port, cfg.HostKeyVerifyFunc),
-		Timeout:         10 * time.Second,
+		Timeout:         sshtuning.Get().DialTimeoutOrDefault(),
 	}
 
 	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)

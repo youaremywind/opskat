@@ -13,7 +13,10 @@ import (
 	"github.com/opskat/opskat/internal/assettype"
 	"github.com/opskat/opskat/internal/model/entity/asset_entity"
 	k8spkg "github.com/opskat/opskat/internal/pkg/k8s"
+	"github.com/opskat/opskat/internal/pkg/proxychain"
+	"github.com/opskat/opskat/internal/pkg/socksdial"
 	"github.com/opskat/opskat/internal/service/asset_svc"
+	"github.com/opskat/opskat/internal/service/credential_resolver"
 	"github.com/opskat/opskat/internal/sshpool"
 
 	"github.com/cago-frame/cago/pkg/logger"
@@ -52,9 +55,13 @@ func (k *K8s) loadK8sCall(ctx context.Context, assetID int64) (*k8sCallContext, 
 	if err != nil {
 		return nil, fmt.Errorf("decrypt kubeconfig: %w", err)
 	}
+	opts, err := k.k8sClientOptions(ctx, asset, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("resolve K8S proxy chain: %w", err)
+	}
 	return &k8sCallContext{
 		kubeconfig: kubeconfig,
-		opts:       k.k8sClientOptions(asset, cfg),
+		opts:       opts,
 	}, nil
 }
 
@@ -181,30 +188,67 @@ func (k *K8s) StopK8sPodLogs(streamID string) {
 	}
 }
 
-func (k *K8s) k8sClientOptions(asset *asset_entity.Asset, cfg *asset_entity.K8sConfig) []k8spkg.ClientOption {
+func (k *K8s) k8sClientOptions(ctx context.Context, asset *asset_entity.Asset, cfg *asset_entity.K8sConfig) ([]k8spkg.ClientOption, error) {
 	opts := make([]k8spkg.ClientOption, 0, 2)
 	if cfg.Context != "" {
 		opts = append(opts, k8spkg.WithContext(cfg.Context))
 	}
-
-	tunnelID := asset.SSHTunnelID
-	if tunnelID == 0 || k.pool == nil {
-		return opts
+	effectiveChain := asset_entity.EffectiveProxyChain(cfg.ProxyChain, asset.SSHTunnelID, cfg.Proxy)
+	layers, err := credential_resolver.Default().ResolveProxyChain(ctx, effectiveChain, 5)
+	if err != nil {
+		return nil, err
+	}
+	if len(layers) > 0 {
+		opts = append(opts, k8spkg.WithDial(func(ctx context.Context, _, address string) (net.Conn, error) {
+			return proxychain.Chain{Layers: layers}.Dial(ctx, address)
+		}))
+		return opts, nil
 	}
 
-	opts = append(opts, k8spkg.WithDial(func(ctx context.Context, network, address string) (net.Conn, error) {
-		client, err := k.pool.Get(ctx, tunnelID)
-		if err != nil {
-			return nil, fmt.Errorf("get SSH tunnel: %w", err)
-		}
-		conn, err := client.Dial(network, address)
-		if err != nil {
-			k.pool.Release(tunnelID)
-			return nil, fmt.Errorf("dial K8S API through SSH tunnel: %w", err)
-		}
-		return &k8sTunnelConn{Conn: conn, pool: k.pool, assetID: tunnelID}, nil
-	}))
-	return opts
+	switch selectDialSource(asset, cfg, k.pool != nil) {
+	case dialTunnel:
+		tunnelID := asset.SSHTunnelID
+		opts = append(opts, k8spkg.WithDial(func(ctx context.Context, network, address string) (net.Conn, error) {
+			client, err := k.pool.Get(ctx, tunnelID)
+			if err != nil {
+				return nil, fmt.Errorf("get SSH tunnel: %w", err)
+			}
+			conn, err := client.Dial(network, address)
+			if err != nil {
+				k.pool.Release(tunnelID)
+				return nil, fmt.Errorf("dial K8S API through SSH tunnel: %w", err)
+			}
+			return &k8sTunnelConn{Conn: conn, pool: k.pool, assetID: tunnelID}, nil
+		}))
+	case dialProxy:
+		// 代理密码入 socksdial 前须明文（与数据库族约定一致）。
+		proxy := credential_resolver.Default().DecryptProxyPassword(cfg.Proxy)
+		opts = append(opts, k8spkg.WithDial(func(ctx context.Context, _, address string) (net.Conn, error) {
+			return socksdial.Dial(ctx, proxy, address)
+		}))
+	}
+	return opts, nil
+}
+
+// dialSource 决定 K8S client 的底层拨号方式。
+type dialSource int
+
+const (
+	dialNone dialSource = iota
+	dialTunnel
+	dialProxy
+)
+
+// selectDialSource 镜像 entity「SSH 隧道与 SOCKS5 代理互斥、隧道优先」约定：
+// 配了隧道且连接池可用 → 隧道；否则未配隧道且配了代理 → 代理；其余直连。
+func selectDialSource(asset *asset_entity.Asset, cfg *asset_entity.K8sConfig, poolAvailable bool) dialSource {
+	if asset.SSHTunnelID != 0 && poolAvailable {
+		return dialTunnel
+	}
+	if asset.SSHTunnelID == 0 && cfg.Proxy != nil {
+		return dialProxy
+	}
+	return dialNone
 }
 
 type k8sTunnelConn struct {

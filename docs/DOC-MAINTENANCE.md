@@ -9,7 +9,7 @@
 Contributor docs describe a living codebase, so two classes of problem recur:
 
 - **Stale facts** — a package / file is renamed, a directory moves, a count changes, and the doc still shows the old value. Real example (**fixed alongside this guide**): `docs/DEVELOP.md` once placed the AI policy checkers as `command_policy.go` under `internal/ai/`; they actually live in **`internal/ai/policy/`**, and the SQL one is `query_policy.go` (there is no `command_policy.go` file; shell-command rules are in `command_rule.go` / `command_shell.go`).
-- **Branch / repo leakage** — something that only exists on a feature branch or in a sibling repo gets written as if already shipped on `main`. opskat sits next to two **independent** sibling repos, `../extensions` and `../agentre` (see memory [[reference_extensions_repo]] / [[reference_agentre_repo]]); uncommitted code in your checkout, or a sibling repo's design, is easy to mistake for something this repo already has. agentre is a downstream renamed fork of opskat — **don't port its code / design into opskat docs** (see [[feedback_no_agentre_port_into_opskat]]).
+- **Branch / repo leakage** — something that only exists on a feature branch or in a sibling repo gets written as if already shipped on `main`. opskat may sit next to independent sibling repositories such as `../extensions` or a downstream fork; uncommitted code in your checkout, or a sibling repo's design, is easy to mistake for something this repo already has. Do not port a sibling or downstream fork's code/design into opskat docs.
 
 **Rule of thumb: if you can't `git grep` it in committed code on this branch, don't write it.** Verify with git-aware commands (`git grep` / `git ls-files` / `git ls-tree`) — **not** bare `rg` / `ls`, which also match **untracked** files in the working tree, so feature-branch code you have locally but haven't committed to `main` masquerades as "shipped".
 
@@ -23,6 +23,7 @@ Contributor docs describe a living codebase, so two classes of problem recur:
 | [`../CLAUDE.md`](../CLAUDE.md) | Just a one-line `@AGENTS.md` pointer — **don't write content here**; change principles in `AGENTS.md`. |
 | [`./DEVELOP.md`](./DEVELOP.md) | The concrete "how to": common commands, commit / CI / testing conventions, logging rules for key flows, generated-files list. |
 | [`./ARCHITECTURE.md`](./ARCHITECTURE.md) | The **structure**: process topology, backend layering, request lifecycle, per-subsystem map, data model, and the AI / extension / opsctl flows. Owns the architecture & subsystem map; `DEVELOP.md` and `AGENTS.md` link here. |
+| [`./DESIGN.md`](./DESIGN.md) | The **design system**: light/dark oklch color tokens, theming, the `@opskat/ui` component palette, the desktop pane shell, domain surfaces, motion / state patterns, accessibility, and a new-surface recipe. Read before building any UI; `DEVELOP.md` / `AGENTS.md` link here. (Visual/presentation layer — complements `ARCHITECTURE.md` §9, which owns frontend *structure*.) |
 | [`./adding-an-asset-type.md`](./adding-an-asset-type.md) | Step-by-step how-to for adding a new built-in asset type: the backend `AssetTypeHandler` + frontend `registerAssetType` seams, what's register-based vs still requires editing shared code (query/terminal/AI-mention couplings). |
 | [`./testing-debugging-guide.md`](./testing-debugging-guide.md) | Feature verification / debugging: reading logs (`logs/opskat.log`), querying the DB (`audit_logs` in `opskat.db`), headless functional testing with `opsctl` (for agents, in English). |
 | [`./e2e-harness-guide.md`](./e2e-harness-guide.md) | GUI end-to-end harness (Playwright × the real Wails app): the committed core-flow suite (`make test-e2e`) + ad-hoc functional verification (gitignored `e2e/scratch/`, `make test-e2e-scratch`), isolation guarantees, and harness-engineering gotchas. Owns everything GUI-e2e; `testing-debugging-guide.md` only points here. |
@@ -48,16 +49,16 @@ Verify each one against the code. Common claim types in opskat and how to check 
 | Claim in the docs | How to check |
 | --- | --- |
 | Backend layer / subsystem directory exists | `git ls-tree --name-only -d HEAD internal/` (then `git ls-files internal/<name>/` to confirm a subsystem, e.g. `sshpool` / `connpool` / `approval`) |
-| **Asset-type list** (N adapters) | `git grep -hn "Register(&" -- internal/assettype/*.go \| grep -v _test` — enumerate them one by one (ssh / database / redis / mongodb / kafka / k8s / etcd / serial), **don't hardcode a number**. Registration-based extension, no `switch assetType` |
+| **Asset-type list** (N adapters) | `git grep -hn "Register(&" -- internal/assettype/*.go \| grep -v _test` — enumerate the registered handlers (including interactive-only types such as RDP and OSS), **don't hardcode a number**. Registration-based extension, no `switch assetType` |
 | A file / package path exists **by exact name** | `git ls-files 'internal/ai/policy/*_policy.go'` — renamed / moved files are the **#1 drift source** (the `command_policy.go` trap above) |
-| AI dispatches extensions via a **single `exec_tool`** | `git grep -n "tool_handler_ext" -- internal/ai` (one `exec_tool` dispatcher, not one AI tool per extension; see [[feedback_ext_exec_single_tool]]) |
+| AI dispatches extensions via a **single `exec_tool`** | `git grep -n "tool_handler_ext" -- internal/ai` (one `exec_tool` dispatcher, not one AI tool per extension) |
 | Migration directory / count | `git ls-files 'migrations/*.go' \| grep -v _test \| wc -l` (enumerate; new migrations are **appended**, old files unchanged) |
 | Frontend stores (one per domain) | `git ls-files 'frontend/src/stores/*.ts' \| grep -v '\.test\.'` |
 | Locales (which / namespace) | `git ls-files 'frontend/src/i18n/locales/*/common.json'` — two, `zh-CN` / `en`; the i18next namespace is `common` |
 | A Make target exists | `git grep -nE '^<target>:' -- Makefile` (every `make x` referenced in the docs must be findable in `Makefile`) |
 | Soft delete via `Status`, not GORM | `git grep -n "StatusActive *=\|StatusDeleted *=" -- internal/model/entity` (`StatusActive=1` / `StatusDeleted=2`, defined in `asset_entity/asset.go`) |
 | Credential encryption | `git grep -niE "argon2\|gcm\|keychain" -- internal/service/credential_svc` (Argon2id + AES-256-GCM, master key in the OS keychain) — the encryption is in `credential_svc`; `internal/bootstrap` only resolves / injects the master key (`ResolveMasterKey`), so don't grep `bootstrap` alone and assume you found it |
-| Commit emoji convention aligns with changelog categories | check against `.claude/skills/release/SKILL.md`; only a single commit intentionally linked to an issue ends with that issue as `#<number>` (plain commits, PR work, and PR / review-comment follow-ups do not need a `#xxx` suffix; generally use issue numbers, not PR numbers; see [[feedback_commit_issue_ref]]) |
+| Commit emoji convention | the emoji table in [`DEVELOP.md`](./DEVELOP.md#commit-message--gitmoji) is the canonical, self-standing list (don't tie it to any local skill); only a single commit intentionally linked to an issue ends with that issue as `#<number>` (plain commits, PR work, and PR / review-comment follow-ups do not need a `#xxx` suffix; generally use issue numbers, not PR numbers) |
 | Constructor / function signatures | open the file and compare parameter by parameter — no grep shortcut |
 | **Generated files** (wailsjs / mock / opsctl_bin) | see *Same name & generated* item 4 below — **don't** use `git ls-files` to check artifacts |
 
@@ -96,7 +97,7 @@ done
 Link integrity — confirm every relative markdown link in the core docs is reachable (`CLAUDE.md`'s `@AGENTS.md` is an import directive, not a relative markdown link, so it's not checked here; separately ensure it remains that single import line):
 
 ```bash
-for doc in AGENTS.md docs/ARCHITECTURE.md docs/DEVELOP.md docs/testing-debugging-guide.md docs/e2e-harness-guide.md docs/DOC-MAINTENANCE.md; do
+for doc in AGENTS.md docs/ARCHITECTURE.md docs/DEVELOP.md docs/DESIGN.md docs/testing-debugging-guide.md docs/e2e-harness-guide.md docs/DOC-MAINTENANCE.md; do
   grep -oE '\]\(([^)]+)\)' "$doc" | sed -E 's/^\]\(|\)$//g' | grep -vE '^https?:|^#' | while read -r link; do
     target="$(dirname "$doc")/${link%%#*}"
     [ -e "$target" ] && echo "ok     $doc → $link" || echo "BROKEN $doc → $link"

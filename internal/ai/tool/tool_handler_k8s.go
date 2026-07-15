@@ -7,6 +7,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/cago-frame/cago/pkg/logger"
@@ -242,7 +244,8 @@ func hasNamespaceFlag(args []string) bool {
 }
 
 func executeK8sCommandLocal(ctx context.Context, kubeconfig string, args []string) (string, error) {
-	if _, err := exec.LookPath("kubectl"); err != nil {
+	kubectlPath, env, err := resolveLocalExecutable("kubectl")
+	if err != nil {
 		return "", fmt.Errorf("kubectl not found on local machine: %w", err)
 	}
 
@@ -252,9 +255,9 @@ func executeK8sCommandLocal(ctx context.Context, kubeconfig string, args []strin
 	}
 	defer removeTempFile(kubeconfigPath)
 
-	cmd := exec.CommandContext(ctx, "kubectl", args...) //nolint:gosec
+	cmd := exec.CommandContext(ctx, kubectlPath, args...) //nolint:gosec
 	executil.HideConsoleWindow(cmd)
-	cmd.Env = append(os.Environ(), "KUBECONFIG="+kubeconfigPath)
+	cmd.Env = append(env, "KUBECONFIG="+kubeconfigPath)
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -268,6 +271,101 @@ func executeK8sCommandLocal(ctx context.Context, kubeconfig string, args []strin
 	}
 
 	return formatCommandOutput(stdout.String(), stderr.String()), nil
+}
+
+func resolveLocalExecutable(name string) (string, []string, error) {
+	env := os.Environ()
+	path, err := exec.LookPath(name)
+	if err == nil {
+		return path, env, nil
+	}
+	if path, dir, ok := findExecutableInDirs(name, localExecutableFallbackDirs()); ok {
+		return path, envWithPrependedPathDirs(env, []string{dir}), nil
+	}
+	return "", nil, err
+}
+
+func localExecutableFallbackDirs() []string {
+	switch runtime.GOOS {
+	case "darwin":
+		return []string{
+			"/opt/homebrew/bin",
+			"/usr/local/bin",
+			"/opt/local/bin",
+		}
+	case "linux":
+		return []string{
+			"/usr/local/bin",
+			"/usr/bin",
+			"/bin",
+			"/snap/bin",
+			"/var/lib/snapd/snap/bin",
+		}
+	default:
+		return nil
+	}
+}
+
+func findExecutableInDirs(name string, dirs []string) (string, string, bool) {
+	for _, dir := range dirs {
+		for _, candidateName := range executableCandidateNames(name) {
+			path := filepath.Join(dir, candidateName)
+			info, err := os.Stat(path)
+			if err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
+				return path, dir, true
+			}
+		}
+	}
+	return "", "", false
+}
+
+func executableCandidateNames(name string) []string {
+	if runtime.GOOS == "windows" && !strings.HasSuffix(strings.ToLower(name), ".exe") {
+		return []string{name + ".exe", name}
+	}
+	return []string{name}
+}
+
+func envWithPrependedPathDirs(env []string, dirs []string) []string {
+	if len(dirs) == 0 {
+		return env
+	}
+
+	const pathPrefix = "PATH="
+	currentPath := ""
+	out := make([]string, 0, len(env)+1)
+	for _, entry := range env {
+		if strings.HasPrefix(entry, pathPrefix) {
+			currentPath = strings.TrimPrefix(entry, pathPrefix)
+			continue
+		}
+		out = append(out, entry)
+	}
+
+	pathParts := make([]string, 0, len(dirs)+1)
+	seen := make(map[string]struct{}, len(dirs)+8)
+	for _, dir := range dirs {
+		if dir == "" {
+			continue
+		}
+		if _, ok := seen[dir]; ok {
+			continue
+		}
+		seen[dir] = struct{}{}
+		pathParts = append(pathParts, dir)
+	}
+	for _, dir := range filepath.SplitList(currentPath) {
+		if dir == "" {
+			continue
+		}
+		if _, ok := seen[dir]; ok {
+			continue
+		}
+		seen[dir] = struct{}{}
+		pathParts = append(pathParts, dir)
+	}
+
+	return append(out, pathPrefix+strings.Join(pathParts, string(os.PathListSeparator)))
 }
 
 func executeK8sCommandOverSSH(ctx context.Context, sshAssetID int64, kubeconfig string, args []string) (string, error) {

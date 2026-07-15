@@ -16,6 +16,7 @@ import (
 	"github.com/opskat/opskat/internal/model/entity/asset_entity"
 	"github.com/opskat/opskat/internal/pkg/dirsync"
 	"github.com/opskat/opskat/internal/service/asset_svc"
+	"github.com/opskat/opskat/internal/service/credential_resolver"
 	"github.com/opskat/opskat/internal/service/credential_svc"
 	"github.com/opskat/opskat/internal/service/server_status_svc"
 	"github.com/opskat/opskat/internal/service/ssh_svc"
@@ -31,6 +32,9 @@ type SSHConnectRequest struct {
 	Key      string `json:"key"`
 	Cols     int    `json:"cols"`
 	Rows     int    `json:"rows"`
+	// InitialWorkdir 仅重连时由前端携带上次已知 cwd，请求新会话 cd 回该目录；
+	// 首次连接为空。是否真正恢复由资产的 RestoreCwdOnReconnect 开关决定。
+	InitialWorkdir string `json:"initialWorkdir"`
 }
 
 // ConnectSSH 连接 SSH 服务器，返回会话 ID
@@ -58,19 +62,22 @@ func (s *SSH) ConnectSSH(req SSHConnectRequest) (string, error) {
 	}
 
 	connectCfg := ssh_svc.ConnectConfig{
-		Host:              sshCfg.Host,
-		Port:              sshCfg.Port,
-		Username:          sshCfg.Username,
-		AuthType:          sshCfg.AuthType,
-		Password:          password,
-		Key:               key,
-		KeyPassphrase:     storedPassphrase,
-		PrivateKeys:       sshCfg.PrivateKeys,
-		AssetID:           req.AssetID,
-		Cols:              req.Cols,
-		Rows:              req.Rows,
-		Proxy:             s.decryptProxyPassword(sshCfg.Proxy),
-		HostKeyVerifyFunc: ssh_svc.AutoTrustFirstRejectChangeVerifyFunc(),
+		Host:                     sshCfg.Host,
+		Port:                     sshCfg.Port,
+		Username:                 sshCfg.Username,
+		AuthType:                 sshCfg.AuthType,
+		Password:                 password,
+		Key:                      key,
+		KeyPassphrase:            storedPassphrase,
+		PrivateKeys:              sshCfg.PrivateKeys,
+		AssetID:                  req.AssetID,
+		Cols:                     req.Cols,
+		Rows:                     req.Rows,
+		Proxy:                    s.decryptProxyPassword(sshCfg.Proxy),
+		HostKeyVerifyFunc:        ssh_svc.AutoTrustFirstRejectChangeVerifyFunc(),
+		KeepAliveIntervalSeconds: sshCfg.KeepAliveIntervalSeconds,
+		RestoreCwdOnReconnect:    sshCfg.RestoreCwdOnReconnect,
+		InitialWorkdir:           req.InitialWorkdir,
 		OnData: func(sid string, data []byte) {
 			wailsRuntime.EventsEmit(s.ctx, "ssh:data:"+sid, base64.StdEncoding.EncodeToString(data))
 		},
@@ -82,12 +89,17 @@ func (s *SSH) ConnectSSH(req SSHConnectRequest) (string, error) {
 		},
 	}
 
-	// 解析跳板机链（递归，最大深度 5）
 	jumpHostID := asset.SSHTunnelID
 	if jumpHostID == 0 {
 		jumpHostID = sshCfg.JumpHostID // backward compat
 	}
-	if jumpHostID > 0 {
+	effectiveChain := asset_entity.EffectiveProxyChain(sshCfg.ProxyChain, jumpHostID, sshCfg.Proxy)
+	proxyChain, err := credential_resolver.Default().ResolveProxyChain(i18n.Ctx(s.ctx, s.lang.Lang()), effectiveChain, 5)
+	if err != nil {
+		return "", err
+	}
+	connectCfg.ProxyChain = proxyChain
+	if len(proxyChain) == 0 && jumpHostID > 0 {
 		jumpHosts, err := s.resolveJumpHosts(jumpHostID, 5)
 		if err != nil {
 			return "", fmt.Errorf("解析跳板机失败: %w", err)
@@ -103,6 +115,36 @@ func (s *SSH) ConnectSSH(req SSHConnectRequest) (string, error) {
 		return "", err
 	}
 	return sessionID, nil
+}
+
+// OpenSFTPSession 建立一个无终端 PTY 的 SSH 会话，用于文件管理器。
+func (s *SSH) OpenSFTPSession(assetID int64) (string, error) {
+	sshCfg, password, key, passphrase, jumpHosts, proxyChain, err := credential_resolver.Default().ResolveSSHConnectConfig(
+		i18n.Ctx(s.ctx, s.lang.Lang()), assetID,
+	)
+	if err != nil {
+		return "", err
+	}
+	connectCfg := ssh_svc.ConnectConfig{
+		Host:                     sshCfg.Host,
+		Port:                     sshCfg.Port,
+		Username:                 sshCfg.Username,
+		AuthType:                 sshCfg.AuthType,
+		Password:                 password,
+		Key:                      key,
+		KeyPassphrase:            passphrase,
+		PrivateKeys:              sshCfg.PrivateKeys,
+		AssetID:                  assetID,
+		JumpHosts:                jumpHosts,
+		ProxyChain:               proxyChain,
+		Proxy:                    s.decryptProxyPassword(sshCfg.Proxy),
+		HostKeyVerifyFunc:        ssh_svc.AutoTrustFirstRejectChangeVerifyFunc(),
+		KeepAliveIntervalSeconds: sshCfg.KeepAliveIntervalSeconds,
+		OnClosed: func(sid string) {
+			wailsRuntime.EventsEmit(s.ctx, "ssh:closed:"+sid, nil)
+		},
+	}
+	return s.manager.ConnectClient(connectCfg)
 }
 
 // isSSHAuthError 判断是否为 SSH 认证失败错误
@@ -163,18 +205,21 @@ func (s *SSH) ConnectSSHAsync(req SSHConnectRequest) (string, error) {
 		}
 
 		connectCfg := ssh_svc.ConnectConfig{
-			Host:          sshCfg.Host,
-			Port:          sshCfg.Port,
-			Username:      sshCfg.Username,
-			AuthType:      sshCfg.AuthType,
-			Password:      password,
-			Key:           key,
-			KeyPassphrase: storedPassphrase,
-			PrivateKeys:   sshCfg.PrivateKeys,
-			AssetID:       req.AssetID,
-			Cols:          req.Cols,
-			Rows:          req.Rows,
-			Proxy:         s.decryptProxyPassword(sshCfg.Proxy),
+			Host:                     sshCfg.Host,
+			Port:                     sshCfg.Port,
+			Username:                 sshCfg.Username,
+			AuthType:                 sshCfg.AuthType,
+			Password:                 password,
+			Key:                      key,
+			KeyPassphrase:            storedPassphrase,
+			PrivateKeys:              sshCfg.PrivateKeys,
+			AssetID:                  req.AssetID,
+			Cols:                     req.Cols,
+			Rows:                     req.Rows,
+			Proxy:                    s.decryptProxyPassword(sshCfg.Proxy),
+			KeepAliveIntervalSeconds: sshCfg.KeepAliveIntervalSeconds,
+			RestoreCwdOnReconnect:    sshCfg.RestoreCwdOnReconnect,
+			InitialWorkdir:           req.InitialWorkdir,
 			OnData: func(sid string, data []byte) {
 				wailsRuntime.EventsEmit(s.ctx, "ssh:data:"+sid, base64.StdEncoding.EncodeToString(data))
 			},
@@ -230,12 +275,18 @@ func (s *SSH) ConnectSSHAsync(req SSHConnectRequest) (string, error) {
 			},
 		}
 
-		// 解析跳板机链
 		jumpHostID := asset.SSHTunnelID
 		if jumpHostID == 0 {
 			jumpHostID = sshCfg.JumpHostID // backward compat
 		}
-		if jumpHostID > 0 {
+		effectiveChain := asset_entity.EffectiveProxyChain(sshCfg.ProxyChain, jumpHostID, sshCfg.Proxy)
+		proxyChain, err := credential_resolver.Default().ResolveProxyChain(i18n.Ctx(s.ctx, s.lang.Lang()), effectiveChain, 5)
+		if err != nil {
+			emitEvent(SSHConnectEvent{Type: "error", Error: fmt.Sprintf("解析代理链失败: %s", err.Error())})
+			return
+		}
+		connectCfg.ProxyChain = proxyChain
+		if len(proxyChain) == 0 && jumpHostID > 0 {
 			emitEvent(SSHConnectEvent{Type: "progress", Step: "resolve", Message: "正在解析跳板机链..."})
 			jumpHosts, err := s.resolveJumpHosts(jumpHostID, 5)
 			if err != nil {
@@ -357,8 +408,13 @@ func (s *SSH) testConnection(ctx context.Context, configJSON string, plainPasswo
 		HostKeyVerifyFunc: ssh_svc.AutoTrustFirstRejectChangeVerifyFunc(),
 	}
 
-	// 解析跳板机
-	if sshCfg.JumpHostID > 0 {
+	effectiveChain := asset_entity.EffectiveProxyChain(sshCfg.ProxyChain, sshCfg.JumpHostID, sshCfg.Proxy)
+	proxyChain, err := credential_resolver.Default().ResolveProxyChain(ctx, effectiveChain, 5)
+	if err != nil {
+		return fmt.Errorf("解析代理链失败: %w", err)
+	}
+	connectCfg.ProxyChain = proxyChain
+	if len(proxyChain) == 0 && sshCfg.JumpHostID > 0 {
 		jumpHosts, err := s.resolveJumpHosts(sshCfg.JumpHostID, 5)
 		if err != nil {
 			return fmt.Errorf("解析跳板机失败: %w", err)

@@ -107,7 +107,10 @@ function IntegrationSection() {
   }, []);
 
   useEffect(() => {
-    detect();
+    // 挂载时探测:detect 的 setState 均在 await 之后,经 async 边界调用避免 effect 内同步 setState
+    void (async () => {
+      await detect();
+    })();
   }, [detect]);
 
   const handleInstallCLI = async () => {
@@ -178,7 +181,7 @@ function IntegrationSection() {
             </div>
             <div className="flex items-center gap-2">
               {opsctlInfo.installed ? (
-                <span className="inline-flex items-center gap-1 text-xs font-medium text-green-600 dark:text-green-400">
+                <span className="inline-flex items-center gap-1 text-xs font-medium text-success">
                   <Check className="h-3.5 w-3.5" />
                   {t("integration.installed")}
                 </span>
@@ -205,7 +208,7 @@ function IntegrationSection() {
                 </div>
               </div>
               {appVersion && opsctlInfo.version && opsctlInfo.version !== appVersion && (
-                <div className="flex items-center gap-2 rounded-md bg-yellow-50 dark:bg-yellow-950 border border-yellow-200 dark:border-yellow-800 px-3 py-2 text-xs text-yellow-700 dark:text-yellow-300">
+                <div className="flex items-center gap-2 rounded-md bg-warning/15 border border-warning/30 px-3 py-2 text-xs text-warning">
                   <Info className="h-3.5 w-3.5 shrink-0" />
                   <span>{t("integration.versionMismatch", { appVersion, cliVersion: opsctlInfo.version })}</span>
                 </div>
@@ -301,10 +304,7 @@ function IntegrationSection() {
               {skillTargets
                 .filter((s) => s.installed)
                 .map((s) => (
-                  <span
-                    key={s.name}
-                    className="inline-flex items-center gap-1 text-xs font-medium text-green-600 dark:text-green-400"
-                  >
+                  <span key={s.name} className="inline-flex items-center gap-1 text-xs font-medium text-success">
                     <Check className="h-3.5 w-3.5" />
                     {s.name}
                   </span>
@@ -435,7 +435,10 @@ export function AISettingsSection() {
   }, []);
 
   useEffect(() => {
-    loadProviders();
+    // 同 IntegrationSection:加载体的 setState 均在 await 之后,经 async 边界调用
+    void (async () => {
+      await loadProviders();
+    })();
   }, [loadProviders]);
 
   const openAddDialog = () => {

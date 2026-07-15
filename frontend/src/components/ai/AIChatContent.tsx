@@ -17,6 +17,7 @@ import { toast } from "sonner";
 import { notifyCopied } from "@/lib/notify";
 import Markdown from "react-markdown";
 import rehypeSanitize from "rehype-sanitize";
+import { markdownComponents } from "@/components/MarkdownLink";
 import remarkGfm from "remark-gfm";
 import {
   Button,
@@ -68,7 +69,7 @@ const mdRehypePlugins = [rehypeSanitize];
 const MarkdownContent = memo(function MarkdownContent({ content }: { content: string }) {
   const deferred = useDeferredValue(content);
   return (
-    <Markdown remarkPlugins={mdRemarkPlugins} rehypePlugins={mdRehypePlugins}>
+    <Markdown remarkPlugins={mdRemarkPlugins} rehypePlugins={mdRehypePlugins} components={markdownComponents}>
       {deferred}
     </Markdown>
   );
@@ -503,7 +504,7 @@ export function AIChatContent({
   }
 
   return (
-    <CompactContext.Provider value={compact}>
+    <CompactContext value={compact}>
       <div className="flex h-full flex-col" data-compact={compact}>
         {/* Messages */}
         <ScrollArea ref={scrollAreaRef} className="flex-1 min-h-0 overflow-hidden">
@@ -650,7 +651,7 @@ export function AIChatContent({
           </AlertDialogContent>
         </AlertDialog>
       </div>
-    </CompactContext.Provider>
+    </CompactContext>
   );
 }
 

@@ -1,16 +1,26 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Server, MessageSquare } from "lucide-react";
+import { Server, MessageSquare, FileCode } from "lucide-react";
+import { toast } from "sonner";
 import { Input, ScrollArea, cn } from "@opskat/ui";
 import { getIconComponent, getIconColor } from "@/components/asset/IconPicker";
 import { filterAssets } from "@/lib/assetSearch";
 import { highlightMatch, type HighlightSegment } from "@/lib/highlightMatch";
+import { pinyinMatch } from "@/lib/pinyin";
 import { openAssetDefault } from "@/lib/openAssetDefault";
+import { resolveSnippetTarget } from "@/lib/snippetTarget";
+import { isRunnableCategoryId, runSnippetOnAsset } from "@/components/snippet/snippetRun";
 import { useAssetStore } from "@/stores/assetStore";
 import { useRecentAssetStore } from "@/stores/recentAssetStore";
+import { useSnippetStore } from "@/stores/snippetStore";
 import { useTabStore, type Tab, type InfoTabMeta, type PageTabMeta } from "@/stores/tabStore";
 import { resolveTabLabel, getBuiltinPageMeta } from "@/components/layout/pageTabMeta";
-import type { asset_entity } from "../../../wailsjs/go/models";
+import type { asset_entity, snippet_entity } from "../../../wailsjs/go/models";
+
+// Max snippets shown in the palette: a small recency list when idle, a wider
+// set while searching.
+const SNIPPETS_EMPTY_LIMIT = 5;
+const SNIPPETS_QUERY_LIMIT = 20;
 
 // ──────────────────────────────────────────────
 // Props
@@ -39,7 +49,13 @@ interface AssetRow {
   groupPath: string;
 }
 
-type Row = TabRow | AssetRow;
+interface SnippetRow {
+  kind: "snippet";
+  id: string;
+  snippet: snippet_entity.Snippet;
+}
+
+type Row = TabRow | AssetRow | SnippetRow;
 
 interface Section {
   label: string;
@@ -123,9 +139,12 @@ export function CommandPalette({ open, onClose, onConnectAsset }: CommandPalette
 
   // Store subscriptions
   const tabs = useTabStore((s) => s.tabs);
+  const activeTabId = useTabStore((s) => s.activeTabId);
   const assets = useAssetStore((s) => s.assets);
   const groups = useAssetStore((s) => s.groups);
   const recentIds = useRecentAssetStore((s) => s.recentIds);
+  const snippets = useSnippetStore((s) => s.all);
+  const snippetCategories = useSnippetStore((s) => s.categories);
 
   // Local state
   const [query, setQuery] = useState("");
@@ -140,14 +159,30 @@ export function CommandPalette({ open, onClose, onConnectAsset }: CommandPalette
       setActiveIndex(0);
       // Focus on next tick to win against Radix focus management
       requestAnimationFrame(() => inputRef.current?.focus());
+      // Refresh snippets each open (they change on the Snippets page); load
+      // categories only if we have none yet — they're needed to tell which
+      // snippets are runnable.
+      void useSnippetStore
+        .getState()
+        .loadAll()
+        .catch((e) => console.error(e));
+      if (useSnippetStore.getState().categories.length === 0) {
+        void useSnippetStore
+          .getState()
+          .loadCategories()
+          .catch((e) => console.error(e));
+      }
     }
     prevOpen.current = open;
   }, [open]);
 
-  // Reset activeIndex when query changes
-  useEffect(() => {
+  // Reset activeIndex when query changes — compare against the previous
+  // render's query instead of a setState-in-effect cascade.
+  const [prevQuery, setPrevQuery] = useState(query);
+  if (query !== prevQuery) {
+    setPrevQuery(query);
     setActiveIndex(0);
-  }, [query]);
+  }
 
   // ────────────────────────────────────────────
   // Sections computation
@@ -155,6 +190,13 @@ export function CommandPalette({ open, onClose, onConnectAsset }: CommandPalette
 
   const sections = useMemo((): Section[] => {
     const assetById = new Map(assets.map((a) => [a.ID, a]));
+
+    const runnableSnippets = snippets.filter((s) => isRunnableCategoryId(s.Category, snippetCategories));
+    const toSnippetRow = (s: snippet_entity.Snippet): SnippetRow => ({
+      kind: "snippet",
+      id: `snippet-${s.ID}`,
+      snippet: s,
+    });
 
     if (!query.trim()) {
       const openedRows: TabRow[] = tabs.map((tab) => ({ kind: "tab", id: `tab-${tab.id}`, tab }));
@@ -167,12 +209,17 @@ export function CommandPalette({ open, onClose, onConnectAsset }: CommandPalette
           return { kind: "asset", id: `asset-recent-${id}`, asset, groupPath: "" };
         });
 
+      const snippetRows = runnableSnippets.slice(0, SNIPPETS_EMPTY_LIMIT).map(toSnippetRow);
+
       const result: Section[] = [];
       if (openedRows.length > 0) {
         result.push({ label: t("commandPalette.section.opened"), rows: openedRows });
       }
       if (recentRows.length > 0) {
         result.push({ label: t("commandPalette.section.recent"), rows: recentRows });
+      }
+      if (snippetRows.length > 0) {
+        result.push({ label: t("commandPalette.section.snippets"), rows: snippetRows });
       }
       return result;
     }
@@ -197,6 +244,11 @@ export function CommandPalette({ open, onClose, onConnectAsset }: CommandPalette
       .filter(({ asset }) => !openedAssetIds.has(asset.ID))
       .map(({ asset, groupPath }) => ({ kind: "asset", id: `asset-${asset.ID}`, asset, groupPath }));
 
+    const snippetRows = runnableSnippets
+      .filter((s) => pinyinMatch(s.Name, query) || (!!s.Description && pinyinMatch(s.Description, query)))
+      .slice(0, SNIPPETS_QUERY_LIMIT)
+      .map(toSnippetRow);
+
     const result: Section[] = [];
     if (openedRows.length > 0) {
       result.push({ label: t("commandPalette.section.opened"), rows: openedRows });
@@ -204,8 +256,11 @@ export function CommandPalette({ open, onClose, onConnectAsset }: CommandPalette
     if (assetRows.length > 0) {
       result.push({ label: t("commandPalette.section.assets"), rows: assetRows });
     }
+    if (snippetRows.length > 0) {
+      result.push({ label: t("commandPalette.section.snippets"), rows: snippetRows });
+    }
     return result;
-  }, [query, tabs, assets, groups, recentIds, t]);
+  }, [query, tabs, assets, groups, recentIds, snippets, snippetCategories, t]);
 
   const flatRows = useMemo(() => sections.flatMap((s) => s.rows), [sections]);
 
@@ -241,11 +296,33 @@ export function CommandPalette({ open, onClose, onConnectAsset }: CommandPalette
     }
   };
 
+  const activateSnippet = (snippet: snippet_entity.Snippet) => {
+    const assetsById = new Map(assets.map((a) => [a.ID, a]));
+    const activeTab = tabs.find((tb) => tb.id === activeTabId);
+    const target = resolveSnippetTarget({ snippet, activeTab, assetsById, categories: snippetCategories });
+    if (target.kind === "active") {
+      // Land the snippet in the active tool tab (insert only, never executes).
+      void runSnippetOnAsset(target.asset, snippet.Content ?? "").catch((e) => {
+        toast.error(e instanceof Error ? e.message : String(e));
+      });
+      useSnippetStore.getState().recordUse(snippet.ID);
+      void useSnippetStore
+        .getState()
+        .setLastAssets(snippet.ID, [target.asset.ID])
+        .catch((e) => console.error(e));
+    } else {
+      // No matching active tab — hand off to the asset-picker drawer (App-level).
+      useSnippetStore.getState().requestHostPick(snippet);
+    }
+  };
+
   const activateRow = (row: Row) => {
     if (row.kind === "tab") {
       useTabStore.getState().activateTab(row.tab.id);
-    } else {
+    } else if (row.kind === "asset") {
       openAssetDefault(row.asset, onConnectAsset);
+    } else {
+      activateSnippet(row.snippet);
     }
     onClose();
   };
@@ -348,7 +425,7 @@ export function CommandPalette({ open, onClose, onConnectAsset }: CommandPalette
                           onClick={() => activateRow(row)}
                           onMouseEnter={() => setActiveIndex(idx)}
                         >
-                          <span className="h-1.5 w-1.5 rounded-full bg-green-500 shrink-0" />
+                          <span className="h-1.5 w-1.5 rounded-full bg-success shrink-0" />
                           {renderIcon(resolveTabIcon(tab))}
                           <span className="flex-1 truncate text-sm">
                             <HighlightedText segments={segments} />
@@ -356,6 +433,40 @@ export function CommandPalette({ open, onClose, onConnectAsset }: CommandPalette
                           {key && (
                             <span className="shrink-0 rounded-sm bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
                               {t(key)}
+                            </span>
+                          )}
+                        </button>
+                      );
+                    }
+
+                    if (row.kind === "snippet") {
+                      const { snippet } = row;
+                      const category = snippetCategories.find((c) => c.id === snippet.Category);
+                      const segments = highlightMatch(snippet.Name, query);
+                      return (
+                        <button
+                          key={row.id}
+                          type="button"
+                          role="option"
+                          data-active-index={idx}
+                          aria-selected={isActive}
+                          className={cn(
+                            "flex w-full items-center gap-2.5 px-3 py-2 cursor-pointer select-none rounded-sm mx-1 text-left",
+                            isActive ? "bg-accent text-accent-foreground" : "hover:bg-accent/50"
+                          )}
+                          onClick={() => activateRow(row)}
+                          onMouseEnter={() => setActiveIndex(idx)}
+                        >
+                          <FileCode className="h-4 w-4 shrink-0 text-muted-foreground" />
+                          <span className="flex-1 min-w-0 truncate text-sm">
+                            <HighlightedText segments={segments} />
+                            {snippet.Description && (
+                              <span className="ml-2 text-xs text-muted-foreground">{snippet.Description}</span>
+                            )}
+                          </span>
+                          {category && (
+                            <span className="shrink-0 rounded-sm bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+                              {category.label}
                             </span>
                           )}
                         </button>

@@ -5,6 +5,8 @@ import {
   Database,
   Cloud,
   Monitor,
+  MonitorUp,
+  ScreenShare,
   Laptop,
   Router,
   HardDrive,
@@ -83,6 +85,7 @@ import {
   NatsIcon,
   PulsarIcon,
   MemcachedIcon,
+  S3Icon,
   DockerIcon,
   KubernetesIcon,
   LinuxIcon,
@@ -130,6 +133,8 @@ const ICON_DISPLAY_NAMES: Record<string, string> = {
   database: "Database",
   cloud: "Cloud",
   monitor: "Monitor",
+  "monitor-up": "RDP",
+  "screen-share": "VNC",
   laptop: "Laptop",
   router: "Router",
   "hard-drive": "Hard Drive",
@@ -182,6 +187,7 @@ const ICON_DISPLAY_NAMES: Record<string, string> = {
   influxdb: "InfluxDB",
   cockroachdb: "CockroachDB",
   minio: "MinIO",
+  s3: "Amazon S3",
   nats: "NATS",
   pulsar: "Pulsar",
   memcached: "Memcached",
@@ -233,6 +239,8 @@ const CATEGORIES: IconCategory[] = [
       database: Database,
       cloud: Cloud,
       monitor: Monitor,
+      "monitor-up": MonitorUp,
+      "screen-share": ScreenShare,
       laptop: Laptop,
       router: Router,
       "hard-drive": HardDrive,
@@ -295,6 +303,7 @@ const CATEGORIES: IconCategory[] = [
       influxdb: InfluxdbIcon,
       cockroachdb: CockroachdbIcon,
       minio: MinioIcon,
+      s3: S3Icon,
       nats: NatsIcon,
       pulsar: PulsarIcon,
       memcached: MemcachedIcon,
@@ -486,9 +495,10 @@ export function IconPicker({ value, onChange, type = "asset", compact = false }:
             variant="outline"
             role="combobox"
             aria-label={displayName}
-            className="h-9 w-9 shrink-0 p-0 flex items-center justify-center"
+            className="flex h-9 w-full items-center justify-center gap-1 px-0"
           >
             <SelectedIcon className="h-4 w-4" style={resolvedColor ? { color: resolvedColor } : undefined} />
+            <ChevronDown className="h-3 w-3 shrink-0 opacity-50" />
           </Button>
         ) : (
           <Button variant="outline" role="combobox" className="w-full justify-between font-normal h-9">

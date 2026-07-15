@@ -130,6 +130,32 @@ describe("buildSSHConfig (锁旧 save/test 序:host→port→username→auth_typ
       '{"host":"1.2.3.4","port":22,"username":"root","auth_type":"password"}'
     );
   });
+
+  describe("keepalive 覆盖(0=跟随全局,不写入)", () => {
+    it(">0 → 写 keepalive_interval_seconds(位于 proxy 之后)", () => {
+      expect(buildSSHConfig(base({ keepAliveIntervalSeconds: 45 }), NO_SECRETS)).toBe(
+        '{"host":"1.2.3.4","port":22,"username":"root","auth_type":"password","keepalive_interval_seconds":45}'
+      );
+    });
+    it("0 → 省略(跟随全局默认)", () => {
+      expect(buildSSHConfig(base({ keepAliveIntervalSeconds: 0 }), NO_SECRETS)).toBe(
+        '{"host":"1.2.3.4","port":22,"username":"root","auth_type":"password"}'
+      );
+    });
+  });
+
+  describe("restoreCwdOnReconnect 覆盖(false 不写入)", () => {
+    it("true → 写 restore_cwd_on_reconnect(位于 keepalive 之后)", () => {
+      expect(buildSSHConfig(base({ keepAliveIntervalSeconds: 45, restoreCwdOnReconnect: true }), NO_SECRETS)).toBe(
+        '{"host":"1.2.3.4","port":22,"username":"root","auth_type":"password","keepalive_interval_seconds":45,"restore_cwd_on_reconnect":true}'
+      );
+    });
+    it("false → 省略", () => {
+      expect(buildSSHConfig(base({ restoreCwdOnReconnect: false }), NO_SECRETS)).toBe(
+        '{"host":"1.2.3.4","port":22,"username":"root","auth_type":"password"}'
+      );
+    });
+  });
 });
 
 describe("parseSSHConfig (镜像旧 loadSSHConfig)", () => {
@@ -188,6 +214,26 @@ describe("parseSSHConfig (镜像旧 loadSSHConfig)", () => {
     const s = parseSSHConfig('{"host":"h","port":22,"username":"u","auth_type":"password"}', 77);
     expect(s.connectionType).toBe("jumphost");
     expect(s.sshTunnelId).toBe(77);
+  });
+
+  it("keepalive_interval_seconds → keepAliveIntervalSeconds;缺省为 0", () => {
+    expect(
+      parseSSHConfig('{"host":"h","port":22,"username":"u","auth_type":"password","keepalive_interval_seconds":45}')
+        .keepAliveIntervalSeconds
+    ).toBe(45);
+    expect(
+      parseSSHConfig('{"host":"h","port":22,"username":"u","auth_type":"password"}').keepAliveIntervalSeconds
+    ).toBe(0);
+  });
+
+  it("restore_cwd_on_reconnect → restoreCwdOnReconnect;缺省为 false", () => {
+    expect(
+      parseSSHConfig('{"host":"h","port":22,"username":"u","auth_type":"password","restore_cwd_on_reconnect":true}')
+        .restoreCwdOnReconnect
+    ).toBe(true);
+    expect(parseSSHConfig('{"host":"h","port":22,"username":"u","auth_type":"password"}').restoreCwdOnReconnect).toBe(
+      false
+    );
   });
 
   it("缺字段用默认", () => {

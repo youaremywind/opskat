@@ -191,12 +191,33 @@ export function EtcdKeyDetail({
   const [historyItems, setHistoryItems] = useState<etcd_svc.EtcdKV[]>([]);
   const historyContainerRef = useRef<HTMLDivElement | null>(null);
 
+  // 拉取参数变化(含首次挂载)时在渲染期复位 loading/err/detail,对比键覆盖拉取 effect 的全部依赖
+  const [prevFetch, setPrevFetch] = useState<{
+    assetId: number;
+    selectedKey: string | null;
+    exec: typeof exec;
+    t: typeof t;
+    revision: number;
+  } | null>(null);
+  if (
+    prevFetch === null ||
+    prevFetch.assetId !== assetId ||
+    prevFetch.selectedKey !== selectedKey ||
+    prevFetch.exec !== exec ||
+    prevFetch.t !== t ||
+    prevFetch.revision !== revision
+  ) {
+    setPrevFetch({ assetId, selectedKey, exec, t, revision });
+    if (selectedKey) {
+      setLoading(true);
+      setErr("");
+      setDetail(null);
+    }
+  }
+
   useEffect(() => {
     if (!selectedKey) return;
     let cancelled = false;
-    setLoading(true);
-    setErr("");
-    setDetail(null);
     exec(buildGetRequest(assetId, selectedKey, revision))
       .then((res) => {
         if (cancelled) return;
@@ -218,14 +239,16 @@ export function EtcdKeyDetail({
     };
   }, [assetId, selectedKey, exec, t, revision]);
 
-  // 切换 key 时复位状态
-  useEffect(() => {
+  // 切换 key 时复位状态:渲染期对比上次 selectedKey,替代 effect 里的同步 setState
+  const [prevSelectedKey, setPrevSelectedKey] = useState(selectedKey);
+  if (selectedKey !== prevSelectedKey) {
+    setPrevSelectedKey(selectedKey);
     setRevision(0);
     setHistoryOpen(false);
     setHistoryItems([]);
     setEditing(false);
     setEditValue("");
-  }, [selectedKey]);
+  }
 
   // outside-click 关 history dropdown
   useEffect(() => {
@@ -386,11 +409,7 @@ export function EtcdKeyDetail({
               {i > 0 && <span className="text-muted-foreground/40">{seg.sep}</span>}
               <span
                 className={
-                  seg.isLast
-                    ? "font-semibold text-foreground"
-                    : i === 0
-                      ? "text-amber-500 dark:text-amber-400"
-                      : "text-muted-foreground"
+                  seg.isLast ? "font-semibold text-foreground" : i === 0 ? "text-warning" : "text-muted-foreground"
                 }
               >
                 {seg.name}
@@ -400,7 +419,7 @@ export function EtcdKeyDetail({
         </div>
         {revision > 0 && (
           <span
-            className="flex shrink-0 items-center gap-1 rounded bg-amber-500/10 px-1.5 py-0.5 font-mono text-[10px] text-amber-700 dark:text-amber-300"
+            className="flex shrink-0 items-center gap-1 rounded bg-warning/10 px-1.5 py-0.5 font-mono text-[10px] text-warning"
             data-testid="etcd-detail-history-banner"
           >
             <History className="size-3" /> {t("etcd.detail.historyAt", { rev: revision })}
@@ -608,8 +627,7 @@ function MetaCol({
   accent?: "purple" | "muted";
   testId?: string;
 }) {
-  const valueClass =
-    accent === "purple" ? "text-purple-500 dark:text-purple-300" : muted ? "text-muted-foreground" : "text-foreground";
+  const valueClass = accent === "purple" ? "text-syntax-number" : muted ? "text-muted-foreground" : "text-foreground";
   return (
     <div className="flex flex-col gap-0.5" data-testid={testId}>
       <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{label}</span>

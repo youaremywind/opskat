@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   AlertDialog,
@@ -28,7 +28,7 @@ import {
 import { FilePlus2, Link, Loader2, Play, Table2, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { notifySuccess } from "@/lib/notify";
-import { ExecuteSQL } from "../../../wailsjs/go/query/Query";
+import { ExecuteSQL, ParseXlsx } from "../../../wailsjs/go/query/Query";
 import {
   buildImportInsertSql,
   detectDelimiter,
@@ -63,7 +63,7 @@ interface ImportTableDataDialogProps {
 }
 
 type WizardStep = "type" | "source" | "delimiter" | "options" | "mapping" | "mode" | "summary";
-type SourceItem = { id: string; name: string; kind: "file" | "url"; text: string };
+type SourceItem = { id: string; name: string; kind: "file" | "url"; text: string; parsed?: ParsedDelimitedTable };
 type ImportProgress = {
   processed: number;
   added: number;
@@ -117,6 +117,12 @@ const importFileRules: Record<ImportDataFormat, { extensions: string[]; mimes: s
     extensions: [".xml"],
     mimes: ["application/xml", "text/xml"],
   },
+  xlsx: {
+    // excelize's OpenReader only parses the OOXML (.xlsx) container, not the
+    // legacy binary .xls — so accept only what the Go side can actually read.
+    extensions: [".xlsx"],
+    mimes: ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+  },
 };
 
 function formatAccept(format: ImportDataFormat): string {
@@ -130,6 +136,18 @@ function isAcceptedFileForFormat(file: File, format: ImportDataFormat): boolean 
   const matchesExtension = rule.extensions.some((extension) => lowerName.endsWith(extension));
   const matchesMime = file.type !== "" && rule.mimes.includes(file.type);
   return matchesExtension || matchesMime;
+}
+
+// arrayBufferToBase64 encodes binary file bytes for the ParseXlsx IPC call,
+// chunking to stay clear of String.fromCharCode argument limits on large files.
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
 }
 
 function mergeParsedTables(tables: ParsedDelimitedTable[]): ParsedDelimitedTable {
@@ -249,57 +267,67 @@ export function ImportTableDataDialog({
     seconds: 0,
   });
 
-  useEffect(() => {
-    if (!open) return;
-    setStepIndex(0);
-    setSources([]);
-    setUrlDraft("");
-    setLogLines([]);
-    setProgress({ processed: 0, added: 0, updated: 0, deleted: 0, error: 0, seconds: 0 });
-    setPrimaryKeys(new Set(tablePrimaryKeys ?? []));
-    setImportMode("append");
-    setAdvancedOpen(false);
-    setExtendedInsert(true);
-    setMaxStatementSizeKb(1024);
-    setEmptyStringAsNull(false);
-    setIgnoreForeignKeyConstraint(false);
-    setContinueOnError(true);
-    setRecordDelimiter("auto");
-    setTextQualifier('"');
-    setDateOrder("dmy");
-    setDateTimeOrder("date-time");
-    setDateDelimiter("/");
-    setYearDelimiterEnabled(false);
-    setYearDelimiter("/");
-    setTimeDelimiter(":");
-    setDecimalSymbol(".");
-    setBinaryEncoding("base64");
-  }, [open, tablePrimaryKeys]);
+  // 打开(或表主键变化)时重置向导并回填主键:渲染期对比上次值,替代 effect 里的级联 setState。
+  const [prevOpenSync, setPrevOpenSync] = useState<{ open: boolean; tablePrimaryKeys?: string[] }>({ open: false });
+  if (open !== prevOpenSync.open || tablePrimaryKeys !== prevOpenSync.tablePrimaryKeys) {
+    setPrevOpenSync({ open, tablePrimaryKeys });
+    if (open) {
+      setStepIndex(0);
+      setSources([]);
+      setUrlDraft("");
+      setLogLines([]);
+      setProgress({ processed: 0, added: 0, updated: 0, deleted: 0, error: 0, seconds: 0 });
+      setPrimaryKeys(new Set(tablePrimaryKeys ?? []));
+      setImportMode("append");
+      setAdvancedOpen(false);
+      setExtendedInsert(true);
+      setMaxStatementSizeKb(1024);
+      setEmptyStringAsNull(false);
+      setIgnoreForeignKeyConstraint(false);
+      setContinueOnError(true);
+      setRecordDelimiter("auto");
+      setTextQualifier('"');
+      setDateOrder("dmy");
+      setDateTimeOrder("date-time");
+      setDateDelimiter("/");
+      setYearDelimiterEnabled(false);
+      setYearDelimiter("/");
+      setTimeDelimiter(":");
+      setDecimalSymbol(".");
+      setBinaryEncoding("base64");
+    }
+  }
 
-  useEffect(() => {
+  // format 变化(含首次渲染,对齐原 effect 挂载即跑)时清空来源并重置分隔符:渲染期对比上次值。
+  const [prevFormat, setPrevFormat] = useState<ImportDataFormat | undefined>(undefined);
+  if (format !== prevFormat) {
+    setPrevFormat(format);
     setSources([]);
     setStepIndex(0);
     setLogLines([]);
     setFieldDelimiter(format === "csv" ? "," : "\t");
-  }, [format]);
+  }
 
   const parsed = useMemo(() => {
     if (sources.length === 0) return { headers: [], rows: [] };
     const delimiter = customDelimiter ? (customDelimiter[0] as ImportFieldDelimiter) : fieldDelimiter;
     return mergeParsedTables(
       sources.map((source) =>
-        parseImportSourceText({
-          text: source.text,
-          format,
-          fieldDelimiter: delimiter,
-          recordDelimiter,
-          textQualifier,
-          fixedWidth: importShape === "fixed",
-          fieldNameRowEnabled,
-          fieldNameRow,
-          dataStartRow,
-          dataEndRow: dataEndRow ? Number(dataEndRow) : undefined,
-        })
+        // XLSX sources are pre-parsed on the Go side; use them as-is.
+        source.parsed
+          ? source.parsed
+          : parseImportSourceText({
+              text: source.text,
+              format,
+              fieldDelimiter: delimiter,
+              recordDelimiter,
+              textQualifier,
+              fixedWidth: importShape === "fixed",
+              fieldNameRowEnabled,
+              fieldNameRow,
+              dataStartRow,
+              dataEndRow: dataEndRow ? Number(dataEndRow) : undefined,
+            })
       )
     );
   }, [
@@ -316,9 +344,12 @@ export function ImportTableDataDialog({
     textQualifier,
   ]);
 
-  useEffect(() => {
+  // 表头/目标列变化(含首次渲染,对齐原 effect 挂载即跑)时自动映射:渲染期对比上次值。
+  const [prevMappingKey, setPrevMappingKey] = useState<{ columns?: string[]; headers?: string[] }>({});
+  if (columns !== prevMappingKey.columns || parsed.headers !== prevMappingKey.headers) {
+    setPrevMappingKey({ columns, headers: parsed.headers });
     setMapping(nextAutoMapping(parsed.headers, columns));
-  }, [columns, parsed.headers]);
+  }
 
   // MSSQL 与 PG 一样按 schema.table 引用，不带 database 前缀（避免被当成 schema.object）
   const tableName = driver === "postgresql" || driver === "mssql" ? table : `${database}.${table}`;
@@ -406,6 +437,20 @@ export function ImportTableDataDialog({
       for (const file of Array.from(files)) {
         if (!isAcceptedFileForFormat(file, format)) {
           rejected += 1;
+          continue;
+        }
+        if (format === "xlsx") {
+          // XLSX is binary — parse it on the Go side (excelize) and carry the
+          // resulting table on the source; no delimiter parsing is applied.
+          const base64 = arrayBufferToBase64(await file.arrayBuffer());
+          const table = await ParseXlsx(base64, "");
+          nextSources.push({
+            id: `${file.name}-${file.size}-${Date.now()}`,
+            name: file.name,
+            kind: "file",
+            text: "",
+            parsed: { headers: table.headers ?? [], rows: table.rows ?? [] },
+          });
           continue;
         }
         const text = await file.text();
@@ -590,7 +635,7 @@ export function ImportTableDataDialog({
           <p className="text-sm font-medium">{t("query.importWizardTypeIntro")}</p>
           <div className="space-y-3">
             <Label className="text-sm">{t("query.importWizardTypeLabel")}</Label>
-            {(["text", "csv", "json", "xml"] as ImportDataFormat[]).map((item) => (
+            {(["text", "csv", "json", "xml", "xlsx"] as ImportDataFormat[]).map((item) => (
               <label key={item} className="flex w-fit cursor-pointer items-center gap-2 text-sm">
                 <input type="radio" name="import-type" checked={format === item} onChange={() => setFormat(item)} />
                 {t(`query.importType${item[0].toUpperCase()}${item.slice(1)}`)}
@@ -960,7 +1005,7 @@ export function ImportTableDataDialog({
             <div
               className={`rounded-md border px-3 py-2 text-xs ${
                 hasMappedColumns
-                  ? "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300"
+                  ? "border-warning/30 bg-warning/10 text-warning"
                   : "border-destructive/40 bg-destructive/10 text-destructive"
               }`}
             >

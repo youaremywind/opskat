@@ -33,23 +33,22 @@ export function PolicyGroupSelector({ policyType, selectedIds, onChange, refresh
   const [groups, setGroups] = useState<policy_group_entity.PolicyGroupItem[]>([]);
   const [open, setOpen] = useState(false);
 
-  const fetchGroups = async () => {
-    try {
-      const items = await ListPolicyGroups(policyTypeMap[policyType] || policyType);
-      // 先加载扩展 i18n，再 setGroups 触发渲染，避免首次显示 i18n key
-      const extNames = new Set((items || []).filter((g) => g.extensionName).map((g) => g.extensionName!));
-      for (const name of extNames) {
-        await loadExtensionLocales(name);
-      }
-      setGroups(items || []);
-    } catch {
-      setGroups([]);
-    }
-  };
-
+  // policyType / refreshKey（外部触发刷新）变化时重新拉取
   useEffect(() => {
-    fetchGroups();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    const fetchGroups = async () => {
+      try {
+        const items = await ListPolicyGroups(policyTypeMap[policyType] || policyType);
+        // 先加载扩展 i18n，再 setGroups 触发渲染，避免首次显示 i18n key
+        const extNames = new Set((items || []).filter((g) => g.extensionName).map((g) => g.extensionName!));
+        for (const name of extNames) {
+          await loadExtensionLocales(name);
+        }
+        setGroups(items || []);
+      } catch {
+        setGroups([]);
+      }
+    };
+    void fetchGroups();
   }, [policyType, refreshKey]);
 
   const displayName = (g: policy_group_entity.PolicyGroupItem) => {
@@ -76,7 +75,7 @@ export function PolicyGroupSelector({ policyType, selectedIds, onChange, refresh
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-1.5">
-        <Shield className="h-3 w-3 text-indigo-500" />
+        <Shield className="h-3 w-3 text-info" />
         <span className="text-[11px] font-medium text-muted-foreground">{t("asset.policyGroup.referenced")}</span>
       </div>
 
@@ -84,14 +83,11 @@ export function PolicyGroupSelector({ policyType, selectedIds, onChange, refresh
         {selectedGroups.map((g) => (
           <span
             key={g.id}
-            className="inline-flex items-center gap-1 rounded-md border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[11px] text-indigo-700 dark:border-indigo-800 dark:bg-indigo-950 dark:text-indigo-300"
+            className="inline-flex items-center gap-1 rounded-md border border-info/30 bg-info/15 px-2 py-0.5 text-[11px] text-info"
           >
             {g.extensionName ? <Puzzle className="h-2.5 w-2.5" /> : g.builtin && <Lock className="h-2.5 w-2.5" />}
             {displayName(g)}
-            <button
-              onClick={() => handleRemove(g.id)}
-              className="ml-0.5 rounded-sm hover:bg-indigo-200 dark:hover:bg-indigo-800"
-            >
+            <button onClick={() => handleRemove(g.id)} className="ml-0.5 rounded-sm hover:bg-info/20">
               <X className="h-2.5 w-2.5" />
             </button>
           </span>

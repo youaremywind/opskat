@@ -197,7 +197,60 @@ rule: drive the real app, then read observable side-effects (UI, DB, logs).
    committed). If the flow turns out to be core and worth guarding forever, *promote* it: move
    it into `e2e/tests/`, harden it, and commit (§5).
 
+**Keeping durable artifacts for review.** If a verification produces screenshots / reports you
+want to hand off or look at later (not just observe-then-delete), save them under
+`docs/verification/<topic>/` — that path is **gitignored** (like `e2e/scratch/`), so the
+artifacts live locally without polluting the PR. The scratch spec that produced them stays
+throwaway; only genuinely core flows get promoted and committed (§5).
+
 See [`e2e/scratch/README.md`](../e2e/scratch/README.md) for a copy-paste starter.
+
+### Verifying against a real server (`.env` targets)
+
+Everything above is **hermetic** — specs point assets at the in-harness mocks (`redis-mock`
+/ `ssh-mock`, §4), so a run touches no real infra. That's the right default. But some checks
+only a **real** server can answer: a real SSH handshake and interactive shell, real
+SFTP/filesystem behavior, a protocol quirk the mock doesn't fake. For those, keep a
+gitignored **`.env`** at the repo root listing real verification targets, with
+**`.env.example`** as the committed template (one `# --- <type> ---` block per real target
+currently covered by the template: SSH / MySQL / PostgreSQL / Redis / MongoDB / etcd / OSS /
+RDP / VNC).
+
+`.env` is **read by no app code** — the app never loads it. The e2e harness
+(`playwright.config.ts`) loads it into `process.env` when present, so a spec / your tooling reads
+the target's host / port / user / key straight from the environment and wires it into whichever
+verification path fits. Clean up the seeded asset after.
+
+- **Scratch spec (real SSH).** Seed a key-auth SSH asset pointing at the `.env` target, using
+  the §8 `node:sqlite` seed pattern. Key auth reads the private-key file straight from disk at
+  connect (`credential_resolver` → `os.ReadFile(private_keys[0])`), so a key-auth asset needs
+  **no** credential row and **no** `OPSKAT_MASTER_KEY` — the config JSON alone is enough. That
+  same `os.ReadFile` does **not** expand `~`, so store an **absolute** path (expand `~`
+  yourself):
+  ```ts
+  const key = process.env.E2E_SSH_KEY!.replace(/^~(?=\/)/, process.env.HOME!); // config needs an ABSOLUTE path (connect's os.ReadFile won't expand ~)
+  const cfg = JSON.stringify({
+    host: process.env.E2E_SSH_HOST, port: Number(process.env.E2E_SSH_PORT ?? 22),
+    username: process.env.E2E_SSH_USER, auth_type: "key", private_keys: [key], // asset_entity.SSHConfig json tags
+  });
+  db.prepare("INSERT INTO assets (name, type, group_id, config, status, ssh_tunnel_id, extension_name) VALUES (?,?,?,?,?,?,?)")
+    .run("e2e-ssh-real", "ssh", 0, cfg, 1, 0, "");                             // group_id 0 → tree root
+  ```
+  `playwright.config.ts` loads the repo-root `.env` into `process.env` (optional — skipped when
+  the file is absent, e.g. on CI; an already-set env var wins), so a spec reads
+  `process.env.E2E_SSH_*` exactly like `OPSKAT_DATA_DIR`. Keep one `KEY=value` per line (no inline
+  comments) so the loader parse stays trivial. This zero-credential seed is **specific to
+  key-auth SSH** — password-auth types (`database` / `redis` / `mongodb` / `oss` / `rdp`) store
+  their secret **AES-encrypted** (`credential_svc`), so a plaintext password in raw seeded config
+  JSON won't decrypt; create those via `opsctl` or the create-asset form (below), which encrypt
+  through the service layer.
+- **Headless (`opsctl`).** Or drive the real target through `opsctl` and read `audit_logs` —
+  see [testing-debugging-guide.md §6](./testing-debugging-guide.md#6-headless-functional-testing-with-opsctl).
+  Prefer an isolated `--data-dir` so the seeded asset never lands in your real inventory.
+
+**Not hermetic — real side effects.** A real target sits outside every isolation guarantee in
+§3. Keep ops **read-only / nondestructive**, never point a destructive scratch spec at it, and
+don't commit the seeded asset or the `.env`.
 
 ## 7. Harness engineering — hard-won lessons (symptom → root cause → fix)
 
@@ -249,6 +302,30 @@ These bit us while building the harness; keep them in mind when changing it.
   needs them.)
 - **A new UI assertion target** → add a `data-testid` (additive) in the same style as §5.
 - **A new persistence oracle** → add a read-only `node:sqlite` helper to `e2e/fixtures/db.ts`.
+- **A spec that needs a pre-existing asset** (e.g. a database asset pointing at a local SQLite
+  fixture, so you can drive the query panel / object browser without going through the
+  create-asset form) → **seed the row directly** into the temp DB with a *writable* `node:sqlite`
+  handle in `beforeAll`, before `page.goto`. The app reads assets from the DB on each fetch, so it
+  shows up on mount — no restart. A SQLite asset needs no credential (nothing to encrypt), so this
+  needs no real server. Sketch:
+  ```ts
+  import { DatabaseSync } from "node:sqlite";
+  // 1. build the fixture DB itself with node:sqlite (tables / views / triggers / indexes)
+  new DatabaseSync("/abs/fixture.db").exec(`CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL); ...`);
+  // 2. seed an asset that points at it (db.ts opens read-only; seeding is the writable counterpart)
+  const db = new DatabaseSync(`${process.env.OPSKAT_DATA_DIR}/opskat.db`);
+  const cfg = JSON.stringify({ driver: "sqlite", path: "/abs/fixture.db" }); // asset_entity.DatabaseConfig json tags
+  db.prepare("INSERT INTO assets (name, type, group_id, config, status, ssh_tunnel_id, extension_name) VALUES (?,?,?,?,?,?,?)")
+    .run("e2e-db", "database", 0, cfg, 1, 0, "");                            // group_id 0 → renders at the tree root
+  db.close();
+  ```
+  Then locate the asset by name and **double-click** the row to open its query tab. (Seeding a
+  non-SQLite asset also needs its credential row, which is encrypted with the harness's
+  `OPSKAT_MASTER_KEY` — driving the create-asset form is simpler there.)
+- **A spec that asserts localized text** → force the language before load with
+  `page.addInitScript(() => localStorage.setItem("language", "zh-CN"))` (i18n init reads
+  `localStorage.language`); otherwise the app follows the auto-detected default and your `是/否`
+  vs `YES/NO` assertion is environment-dependent.
 - **A spec where the app must really connect somewhere** → stand up a minimal protocol mock
   as an extra `webServer` entry (TCP `port` readiness, not `url`), point the asset at
   `127.0.0.1:<port>`, and assert via the form's **Test Connection** (`asset-test-connection`):
@@ -263,7 +340,7 @@ These bit us while building the harness; keep them in mind when changing it.
 | Path | Role | Committed? |
 |---|---|---|
 | `e2e/run-e2e.mjs` | cross-platform runner: spawns `playwright test`, then reaps orphan `vite` + removes temp dir after it exits | yes |
-| `e2e/playwright.config.ts` | base harness: temp dir + env + `frontend/dist` prep, three `webServer`s (mock Redis on `34217`, mock SSH on `34218`, + `wails dev -devserver 34216`) | yes |
+| `e2e/playwright.config.ts` | base harness: temp dir + env + `frontend/dist` prep, optional repo-root `.env` load (§6), three `webServer`s (mock Redis on `34217`, mock SSH on `34218`, + `wails dev -devserver 34216`) | yes |
 | `e2e/playwright.scratch.config.ts` | extends base, `testDir: ./scratch` for throwaway specs | yes |
 | `e2e/fixtures/db.ts` | read-only `node:sqlite` DB oracle (`findAssetByName`, …) | yes |
 | `e2e/fixtures/redis-mock.mjs` | minimal pure-Node RESP mock (HELLO→`-ERR` / PING→`+PONG`), started as a 2nd webServer for the `redis-connect` spec | yes |
@@ -273,6 +350,8 @@ These bit us while building the harness; keep them in mind when changing it.
 | `e2e/scratch/README.md` | scratch convention + starter template | yes |
 | `e2e/package.json` → `setup` / `test` / `test:scratch` | one-time install+Chromium / run suite / run scratch | yes |
 | `Makefile` → `test-e2e` / `test-e2e-scratch` | thin aliases for `pnpm test` / `pnpm run test:scratch` | yes |
+| `.env.example` | template for real-target verification (`.env` schema — one block per asset type), copied to a gitignored `.env` (§6) | yes |
+| `.env` | real verification targets (host / port / user / credentials); read by no app code — `playwright.config.ts` loads it into `process.env` for §6 real-server checks | **no (gitignored)** |
 
 Backend enablers that make it hermetic: `main.go` (`resolveBootstrap`, conditional
 `SingleInstanceLock`), `internal/bootstrap` (`ResolvedDataDir`, `GetLogsDir`),

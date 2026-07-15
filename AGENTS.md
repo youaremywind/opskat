@@ -6,7 +6,7 @@ This file is the single source of guidance for AI coding agents (Claude Code at 
 
 ## Project Overview
 
-OpsKat — AI-first desktop app for managing remote infra (SSH, MySQL/PostgreSQL, Redis, MongoDB, Kafka, K8s, etcd). **Wails v2** (Go 1.26 + React 19), IPC only — no HTTP API. Module: `github.com/opskat/opskat`.
+OpsKat — AI-first desktop app for managing remote infrastructure: terminals and remote desktops, databases, object storage, Redis, MongoDB, Kafka, Kubernetes, etcd, and more. **Wails v2** (Go 1.26 + React 19), IPC only — no HTTP API. Module: `github.com/opskat/opskat`.
 
 Extension source lives in the sibling repo `../extensions/`. For the architecture layering, subsystems, data, and frontend structure, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
@@ -40,7 +40,7 @@ Defensive code for cases that can't happen, swallowed errors, or shims for retir
 
 Parallel copies drift within weeks. Before any new component/hook/util/Go helper, grep for the existing one.
 
-- **Shared UI primitives** exist: `AssetSelect` / `AssetMultiSelect` / `GroupSelect`, `TreeSelect` / `TreeCheckList`, `ConfirmDialog`, `PasswordSourceField`, `IconPicker`, terminal panes, query result grid, tab system, shortcut store. Don't re-derive expand/collapse, tri-state checkboxes, search/pinyin, shortcuts, approval flows, or icon resolution.
+- **Shared UI primitives** exist: `AssetSelect` / `AssetMultiSelect` / `GroupSelect`, `TreeSelect` / `TreeCheckList`, `ConfirmDialog`, `PasswordSourceField`, `IconPicker`, terminal panes, query result grid, tab system, shortcut store. Don't re-derive expand/collapse, tri-state checkboxes, search/pinyin, shortcuts, approval flows, or icon resolution. The full **design system** — color tokens, theming, the `@opskat/ui` component palette, the desktop pane shell, motion / state patterns, and a new-surface recipe — lives in [docs/DESIGN.md](docs/DESIGN.md); read it before building any new tab, pane, or dialog.
 - **Shared filters/loading** belong in `useAssetStore` / `useAssetTree` / `useGroupTree` / `useShortcutStore`. New filter → hook option, not inline.
 - **Cross-cutting concerns** (audit, AI tool registration, approval, credential encryption, connection pools, i18n) have canonical entry points — don't spin up a second one. Logging rules are in [docs/DEVELOP.md → Logging for key flows](docs/DEVELOP.md#logging-for-key-flows).
 - **Toast notifications** go through `frontend/src/lib/notify.ts`: for success use `notifyCopied` (copy / clipboard — top-center, a 1s flash) / `notifySuccess` (other successful operations — top-center); **don't call `toast.success` directly**. Errors / warnings / info still use `toast.error` / `toast.warning` / `toast.info` and stay at the default bottom-right position. Terminal / AI / query views all refresh bottom-up, so a success toast at the bottom would occlude the output (#135).

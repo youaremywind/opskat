@@ -17,7 +17,7 @@ The built-in set must be enumerated from committed code, not hardcoded by count:
 git grep -n "Register(&" -- internal/assettype/*.go | grep -v '_test.go'
 ```
 
-Current built-ins on this branch are `ssh`, `database`, `redis`, `mongodb`, `kafka`, `k8s`, `serial`, `local`, and `etcd`. Frontend registration is the side-effect import list in `frontend/src/lib/assetTypes/index.ts`.
+Frontend registration is enumerated from the side-effect imports in `frontend/src/lib/assetTypes/index.ts`; do not copy either registry into a prose list that will drift.
 
 ## Integration Surface Depends on Capabilities
 
@@ -44,8 +44,8 @@ Several asset-type features are shared capabilities rather than type-local inven
 | Capability | Backend owner | Frontend owner | Notes |
 | --- | --- | --- | --- |
 | Asset-type registration and AI safe views | `internal/assettype/` | `src/lib/assetTypes/` | Backend add/update/get/list dispatch is registration-driven through `assettype.Get(type)`. Frontend selector/filter/detail/config rendering is derived from `registerAssetType`. |
-| Config form contract and serialization | Entity config structs plus type-specific services | `src/lib/assetTypes/formContract.ts` and `<Name>ConfigSection*.ts` | The shell calls `buildConfig` / `buildTestConfig`; type sections own parsing, validation, and exact JSON output. |
-| SSH tunnels, SOCKS5 proxy, and TLS | `internal/connpool/` (`NewSSHTunnel`, `BuildTLSConfig`, `dialer.go` helpers over `internal/pkg/socksdial`) | `ConnectionMethodFields`, `proxyConfig.ts`, `sshTunnelId`, and type config sections | Networked types resolve the tunnel from top-level `asset.SSHTunnelID` first, then legacy config fields; an optional `proxy` config block is mutually exclusive with the tunnel (tunnel wins). Save/test serialization differs; see [F3](#f3-configsection-and-pure-configts-serialization). |
+| Config form contract and serialization | Entity config structs plus type-specific services | `src/lib/assetTypes/formContract.ts`, the shared `useConfigSection` hook, the `configFields.tsx` field schema (`ConfigGroupSchema` / `FieldDesc`), `ConfigTabs`, and `<Name>ConfigSection*.ts` | The shell calls `buildConfig` / `buildTestConfig`; a section declares a `ConfigGroupSchema` and wires state/validity/build through `useConfigSection`, while the pure `.config.ts` owns parsing, validation, and exact JSON output. |
+| Proxy chains and TLS | `internal/pkg/proxychain`, `credential_resolver.ResolveProxyChain`, and `internal/connpool.ProxyChainDialContext` | `ConnectionMethodFields`, `proxyConfig.ts`, and type config sections | Networked types store `proxy_chain`; legacy `sshTunnelId` / `ssh_asset_id` and `proxy` fields are normalized to a one-layer chain. Resolve secrets once at the connection boundary and propagate errors—never silently downgrade a configured chain to direct. Save/test serialization differs; see [F3](#f3-configsection-and-pure-configts-serialization). |
 | Password credentials and SSH keys | `credential_svc`, `credential_mgr_svc`, `credential_resolver` | `credentialConfig.ts`, `useAssetCredential.ts`, `PasswordSourceField.tsx`, and SSH key controls | `credential_id` is not globally one thing. In SSH password-auth it refers to a password credential; in SSH key-auth it refers to an `ssh_key` credential. |
 | Connection tests | `internal/service/conntest` plus binder `New()` registration | `testable` and `buildTestConfig` | Do not edit `System.TestAssetConnection`; register a tester and let the common binding dispatch. |
 | Policy and policy groups | `internal/model/entity/policy`, `internal/ai/policy`, policy-group entities | `PolicyDefinition`, `CommandPolicyCard`, `PolicyGroupManager` | Reuse an existing policy kind when semantics match; add a new kind only for genuinely new policy behavior. |
@@ -168,7 +168,7 @@ if tunnelID == 0 {
 }
 ```
 
-Transport selection convention: tunnel > SOCKS5 proxy (`cfg.Proxy`) > direct. `internal/connpool/dialer.go` provides the shared pieces — `tunnelDialFunc` / `proxyDialFunc` (over `internal/pkg/socksdial`) adapt either transport to a per-address dial function, and `tlsWrappedDialFunc` adds manual TLS wrapping for drivers whose own TLS options are bypassed or rejected when a custom dialer is set (go-redis, franz-go). `cfg.Proxy.Password` is encrypted at rest; callers decrypt it with `credential_resolver.Default().DecryptProxyPassword(cfg.Proxy)` next to the main password resolution before dialing — `connpool` itself only accepts plaintext.
+Transport selection convention: an explicit `proxy_chain` wins; legacy tunnel/SOCKS fields are normalized only when no new chain is saved. Resolve the chain through `credential_resolver.ResolveProxyChain`, then use `connpool.ProxyChainDialContext` for standard TCP/HTTP transports. `tlsWrappedDialFunc` adds manual TLS wrapping for drivers whose own TLS options are bypassed or rejected when a custom dialer is set (go-redis, franz-go). Chain secrets remain encrypted at rest and are resolved once at the connection boundary.
 
 Current frontend sections prefer the asset row's top-level `sshTunnelId` when loading forms. Saved config behavior is mixed for historical built-ins: SSH, Redis, and MongoDB omit their legacy tunnel field on save, while database, etcd, and Kafka still serialize `ssh_asset_id` in saved config. Test config is different because no asset row exists yet; see [F3](#f3-configsection-and-pure-configts-serialization). The connection method (direct / tunnel / proxy) is a single `connectionType` choice in the shared `ConnectionMethodFields` + `proxyConfig.ts`, so a saved config never carries both a tunnel and a `proxy` block.
 
@@ -254,7 +254,9 @@ export interface AssetTypeDefinition {
   category: AssetTypeCategory; // "servers" | "databases" | "middleware" | "extension"
   canConnect: boolean;
   canConnectInNewTab: boolean;
-  connectAction: "terminal" | "query";
+  connectAction: "terminal" | "query" | "page";
+  pageId?: string;
+  pageIcon?: string;
   canOpenFileManager?: boolean;
   DetailInfoCard: ComponentType<DetailInfoCardProps>;
   ConfigSection?: ConfigSectionComponent;
@@ -296,8 +298,9 @@ Useful patterns:
 - `ssh.ts`: `connectAction: "terminal"`, `canConnectInNewTab: true`, `canOpenFileManager: true`.
 - `serial.ts`: terminal transport type, `testable: true`, command-policy UI through `policyType: "ssh"`.
 - `local.ts`: no exposed policy and no Test button.
-- `k8s.ts`: aliases `["k8s", "kubernetes"]`, no Test button, opens a bespoke page through `App.tsx`.
+- `k8s.ts`: aliases `["k8s", "kubernetes"]`, no Test button, opens a bespoke page through `openAsset.ts`.
 - `database.ts`: aliases `["database", "mysql", "postgresql"]`; driver differences fold into the single `database` type.
+- `rdp.ts`: `connectAction: "page"` plus `pageId: "rdp"`; the generic open-asset path creates an asset-scoped page tab.
 
 The unavoidable shared edit is the side-effect import. `registerAssetType` only runs when the module is imported, so add this line to `src/lib/assetTypes/index.ts`:
 
@@ -358,14 +361,43 @@ Contract:
 - It reports validity through `onValidityChange`.
 - It exposes `buildConfig` and, when testable, `buildTestConfig` through `useImperativeHandle`.
 - Untestable types return `null` for `buildTestConfig`.
+- Do not hand-wire `useState` + `useImperativeHandle` + validity reporting. The shared `useConfigSection` hook provides all of it — a section supplies `init` / `validate` / `build` / `buildTest` and gets back `{ state, patch }`. See [F3](#f3-configsection-and-pure-configts-serialization).
 
 `AssetForm.tsx` renders registered sections generically with `key={assetType}` so switching type remounts the section. Save calls `sectionRef.current.buildConfig(ctx)`. Test calls `buildTestConfig`. The shell has no per-type config-building branches; the remaining shared edits there are decorative defaults such as `DEFAULT_ICONS` and name placeholders.
 
 ### F3. ConfigSection and Pure `.config.ts` Serialization
 
-Standard files for a type with persisted config:
+A `ConfigSection` is schema-driven, not hand-rolled markup. The `.tsx` is a thin `forwardRef` that does three things:
 
-- `<Name>ConfigSection.tsx`: `forwardRef` UI component. It initializes state from `editAsset`, reports validity, and exposes build methods.
+1. Wire state, validity, and the imperative handle through the shared `useConfigSection` hook (`src/components/asset/useConfigSection.ts`):
+
+   ```ts
+   const { state, patch } = useConfigSection<XxxFormState>({
+     ref, editAsset, onValidityChange,
+     init: (a) => (a ? parseXxxConfig(a.Config, a.sshTunnelId || 0) : { ...XXX_DEFAULTS }),
+     validate: (s) => ({ canTest, canSave, saveDisabledReason }),
+     build: async (s, ctx) => ({ configJSON: buildXxxConfig(...), sshTunnelId }),
+     buildTest: async (s) => ({ assetType, configJSON, password }), // omit → untestable
+     deps: [cred.value], // extra identities the build/buildTest closures capture
+   });
+   ```
+
+   The hook owns `useState`, shallow-compared validity reporting (recomputed on `state`; pass `validityDeps` when `validate` also reads state kept outside the hook, as Kafka does for its schema-registry / connect validation sub-state), and the `useImperativeHandle` that exposes `buildConfig` / `buildTestConfig`. Omitting `buildTest` exposes `buildTestConfig` as `null`. Do not re-implement that boilerplate per section.
+
+2. Declare the fields as data — a `ConfigGroupSchema<XxxFormState>[]` from `src/components/asset/configFields.tsx`. Each group is a tab; each field is a `FieldDesc` of a fixed `kind`:
+
+   - Leaf inputs: `text`, `number`, `switch`, `select`, `segmented`, `textarea`.
+   - Layout: `row` (a horizontal group of fields).
+   - Composite: `password` (renders `PasswordSourceField`, fed by `ctx.cred`; see [F4](#f4-shared-credential-layer)) and `tunnel` (renders `ConnectionMethodFields`).
+   - Escape hatch: a `custom` field with its own `render`, or a group-level `render` on the `ConfigGroupSchema` for a whole tab, when a bespoke block (SSH key-auth, K8s kubeconfig, Kafka's schema-registry / connect tabs) does not fit the leaf kinds.
+   - Any field takes `visibleWhen: (s) => boolean` for conditional display.
+
+3. Render `<ConfigTabs groups={buildConfigGroups(GROUPS, { state, patch, ctx: { cred, editAsset } })} />`. `ConfigTabs` (`src/components/asset/ConfigTabs.tsx`) draws one underline tab per group; a single group degrades to a plain panel with no tab bar. Reuse the conventional tab keys/labels — `connection` / `tunnel` / `tls` / `advanced` (`asset.tabConnection` …) — rather than inventing new ones.
+
+The label+control primitives (`Field`, `FieldLabel`, `Segmented`) live in `src/components/asset/fields.tsx`; reach for them (or add a new field `kind`) instead of hand-rolling label + input markup.
+
+Pure-serialization files for a type with persisted config:
+
 - `<Name>ConfigSection.config.ts`: pure `buildXxxConfig` / `parseXxxConfig`, defaults, and `XxxFormState`. No React and no side effects.
 - `__tests__/<Name>ConfigSection.config.test.ts`: golden tests for exact JSON output when key order, default omission, tunnel behavior, or credential fragments matter.
 
@@ -394,7 +426,7 @@ Files:
 - `src/components/asset/useAssetCredential.ts`
 - `src/components/asset/PasswordSourceField.tsx`
 
-Database-family password/managed-credential types reuse this layer: `database`, `redis`, `mongodb`, `kafka`, and `etcd`. SSH password-auth also reuses it.
+Database-family password/managed-credential types reuse this layer: `database`, `redis`, `mongodb`, `kafka`, and `etcd`. SSH password-auth also reuses it. In a schema-driven section the credential is wired by passing the `useAssetCredential(editAsset)` result as `ctx.cred` to `buildConfigGroups`; the `password` field `kind` then renders `PasswordSourceField` from it (see [F3](#f3-configsection-and-pure-configts-serialization)).
 
 - `useAssetCredential(editAsset, initialCredentialConfig?)` owns credential sub-state, loads `ListCredentialsByType("password")`, and initializes from either the explicit credential fragment or `editAsset.Config`.
 - `credentialConfig.ts` exposes `initCredentialFromConfig`, `resolveTestCredential`, and `resolveSaveCredential(s, encrypt)`.
@@ -458,7 +490,7 @@ Required or likely keys:
 3. Add the type to the ordered assertion in `src/lib/assetTypes/__tests__/registry.test.ts`.
 4. Add `src/components/asset/<Name>ConfigSection.config.ts`.
 5. Add golden tests for serialized config when the type has meaningful saved/test JSON behavior.
-6. Add `src/components/asset/<Name>ConfigSection.tsx`; reuse `useAssetCredential` and `PasswordSourceField` when the type uses password/managed credentials.
+6. Add `src/components/asset/<Name>ConfigSection.tsx`: drive it with `useConfigSection`, declare a `ConfigGroupSchema`, and render it through `ConfigTabs` (reuse the field `kind`s in `configFields.tsx`; escape to a `custom` field or group `render` only for bespoke UI). Feed `useAssetCredential`'s result as `ctx.cred` for the `password` field kind when the type uses password/managed credentials.
 7. Add `src/components/asset/detail/<Name>DetailInfoCard.tsx`.
 8. Add i18n keys to both locale files.
 9. Optionally update decorative defaults in `AssetForm.tsx` such as `DEFAULT_ICONS` and name placeholders.
@@ -471,9 +503,9 @@ The following surfaces still branch on type strings. A new type only needs these
 | --- | --- | --- | --- |
 | `internal/model/entity/asset_entity/asset.go` (`Validate`, `CanConnect`) | Built-in `AssetType*` cases | Entity validation and active/connectable checks | Every new built-in type with config validation or connectability |
 | `src/stores/terminalStore.ts` (`transportForAsset`) | `serial`, `local`, else `ssh` | Terminal transport kind | New terminal type whose transport is not SSH |
-| `src/stores/queryStore.ts` (`openQueryTab`, persistence rehydrate, `QueryTabMeta.assetType` union) | `database`, `mongodb`, `redis`, plus query union literals | Query tab metadata, config parsing, initial state, persisted restore | `connectAction: "query"` types that need query-store state |
-| `src/components/layout/MainPanel.tsx` | `database`, `redis`, `kafka`, `etcd`, else MongoDB | Which query panel renders | Types that need their own query panel |
-| `src/App.tsx` (`handleConnectAsset`) | `k8s` | Bespoke page tab (`k8s-cluster`) instead of generic connection | Types that need a bespoke page |
+| `src/stores/queryStore.ts` (`openQueryTab`, persistence rehydrate, `QueryTabMeta.assetType` union) | `database`, `redis`, `mongodb`, `kafka`, `k8s`, `etcd`, `oss` (the full `QueryTabMeta.assetType` union) | Query tab metadata, config parsing, initial state, persisted restore | `connectAction: "query"` types that need query-store state |
+| `src/components/layout/MainPanel.tsx` | `database`, `redis`, `kafka`, `etcd`, `oss`, else MongoDB | Which query panel renders | Types that need their own query panel |
+| `src/lib/openAsset.ts` | `k8s`; generic handling for registered `page` actions | Bespoke page tab (`k8s-cluster`) and registered asset-scoped pages such as RDP | Edit only when a page cannot use the generic `connectAction: "page"` + `pageId` path |
 | `src/App.tsx` (`handleOpenFileManager`) | `asset.Type !== "ssh"` early return | File-manager opening behavior; menu visibility is registered, but the handler is still SSH-only | Types that need SFTP/file-manager opening |
 | `src/components/asset/CommandPolicyCard.tsx` and `PolicyGroupManager.tsx` | `ssh`, `k8s`, `database`, `redis`, `mongodb`, and built-in tab keys | Policy editor tab mapping and labels | Types whose policy UI needs custom tab mapping or labels |
 | `src/components/ai/MentionList.tsx`, `ai/input/content.ts`, `lib/mentionXml.ts`, `lib/openMentionTarget.ts` | `database` | AI mention databases/tables | Types that need mention autocomplete/open behavior |

@@ -262,11 +262,14 @@ export function FileManagerPanel({
     void loadDir(sessionSync.cwd);
   }, [currentPath, directoryFollowMode, isOpen, loadDir, sessionSync?.cwd, sessionSync?.cwdKnown]);
 
-  useEffect(() => {
+  // safePendingConflict 变化(含首次挂载)时弹出 pending 对话框:渲染期对比上次值,替代 effect 里的同步 setState
+  const [prevPendingConflict, setPrevPendingConflict] = useState<typeof safePendingConflict | undefined>(undefined);
+  if (safePendingConflict !== prevPendingConflict) {
+    setPrevPendingConflict(safePendingConflict);
     if (safePendingConflict) {
       setPendingDialogOpen(true);
     }
-  }, [safePendingConflict]);
+  }
 
   const doneUploadCount = tabTransfers.filter(
     (transfer) => transfer.status === "done" && transfer.direction === "upload"
@@ -778,7 +781,7 @@ export function FileManagerPanel({
             />
 
             {pendingItems.length > 0 && (
-              <div className="border-b bg-amber-500/5 px-3 py-2">
+              <div className="border-b bg-warning/5 px-3 py-2">
                 <Button
                   className="w-full justify-between"
                   data-testid="external-edit-pending-entry"
@@ -787,10 +790,10 @@ export function FileManagerPanel({
                   onClick={() => setPendingDialogOpen(true)}
                 >
                   <span className="flex items-center gap-2">
-                    <AlertTriangle className="h-4 w-4 text-amber-500" />
+                    <AlertTriangle className="h-4 w-4 text-warning" />
                     {t("externalEdit.pending.entry")}
                   </span>
-                  <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-xs text-amber-700 dark:text-amber-300">
+                  <span className="rounded-full bg-warning/15 px-2 py-0.5 text-xs text-warning">
                     {pendingItems.length}
                   </span>
                 </Button>

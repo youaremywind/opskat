@@ -16,9 +16,6 @@ import { useLayoutStore } from "@/stores/layoutStore";
 const AssetDetail = lazy(() => import("@/components/asset/AssetDetail").then((m) => ({ default: m.AssetDetail })));
 const GroupDetail = lazy(() => import("@/components/asset/GroupDetail").then((m) => ({ default: m.GroupDetail })));
 const SplitPane = lazy(() => import("@/components/terminal/SplitPane").then((m) => ({ default: m.SplitPane })));
-const SessionToolbar = lazy(() =>
-  import("@/components/terminal/SessionToolbar").then((m) => ({ default: m.SessionToolbar }))
-);
 const TerminalToolbar = lazy(() =>
   import("@/components/terminal/TerminalToolbar").then((m) => ({ default: m.TerminalToolbar }))
 );
@@ -44,9 +41,14 @@ const RedisPanel = lazy(() => import("@/components/query/RedisPanel").then((m) =
 const MongoDBPanel = lazy(() => import("@/components/query/MongoDBPanel").then((m) => ({ default: m.MongoDBPanel })));
 const KafkaPanel = lazy(() => import("@/components/query/KafkaPanel").then((m) => ({ default: m.KafkaPanel })));
 const EtcdPanel = lazy(() => import("@/components/query/EtcdPanel").then((m) => ({ default: m.EtcdPanel })));
+const OSSBrowserPanel = lazy(() =>
+  import("@/components/query/OSSBrowserPanel").then((m) => ({ default: m.OSSBrowserPanel }))
+);
 const K8sClusterPage = lazy(() =>
   import("@/components/k8s/K8sClusterPage").then((m) => ({ default: m.K8sClusterPage }))
 );
+const VNCPanel = lazy(() => import("@/components/vnc/VNCPanel").then((m) => ({ default: m.VNCPanel })));
+const RDPPanel = lazy(() => import("@/components/rdp/RDPPanel").then((m) => ({ default: m.RDPPanel })));
 
 interface MainPanelProps {
   onEditAsset: (asset: asset_entity.Asset) => void;
@@ -109,6 +111,7 @@ export function MainPanel({ onEditAsset, onDeleteAsset, onConnectAsset }: MainPa
   const terminalTabs = tabs.filter((tab) => tab.type === "terminal");
   const aiTabs = tabs.filter((tab) => tab.type === "ai");
   const queryTabs = tabs.filter((tab) => tab.type === "query");
+  const vncTabs = tabs.filter((tab) => tab.type === "page" && (tab.meta as PageTabMeta).pageId === "vnc");
 
   function renderActiveContent() {
     if (!activeTab) return null;
@@ -158,6 +161,11 @@ export function MainPanel({ onEditAsset, onDeleteAsset, onConnectAsset }: MainPa
             const k8sAsset = meta.assetId ? assets.find((a) => a.ID === meta.assetId) : null;
             if (!k8sAsset) return null;
             return <K8sClusterPage asset={k8sAsset} />;
+          }
+          case "rdp": {
+            const rdpAsset = meta.assetId ? assets.find((a) => a.ID === meta.assetId) : null;
+            if (!rdpAsset) return null;
+            return <RDPPanel asset={rdpAsset} onEdit={() => onEditAsset(rdpAsset)} />;
           }
           default:
             if (meta.extensionName) {
@@ -233,7 +241,6 @@ export function MainPanel({ onEditAsset, onDeleteAsset, onConnectAsset }: MainPa
               }}
             >
               <LazySurface>
-                <SessionToolbar tabId={tab.id} />
                 <div className="flex-1 min-h-0 overflow-hidden flex">
                   <div className="flex-1 min-w-0 overflow-hidden">
                     {data && (
@@ -284,7 +291,25 @@ export function MainPanel({ onEditAsset, onDeleteAsset, onConnectAsset }: MainPa
           );
         })}
 
-        {activeTab && activeTab.type === "page" && (
+        {vncTabs.map((tab) => {
+          const meta = tab.meta as PageTabMeta;
+          const asset = meta.assetId ? assets.find((item) => item.ID === meta.assetId) : null;
+          if (!asset) return null;
+          const isActive = activeTabId === tab.id;
+          return (
+            <div
+              key={tab.id}
+              className="absolute inset-0 bg-background"
+              style={{ visibility: isActive ? "visible" : "hidden", pointerEvents: isActive ? "auto" : "none" }}
+            >
+              <LazySurface>
+                <VNCPanel tabId={tab.id} asset={asset} onEdit={() => onEditAsset(asset)} />
+              </LazySurface>
+            </div>
+          );
+        })}
+
+        {activeTab && activeTab.type === "page" && (activeTab.meta as PageTabMeta).pageId !== "vnc" && (
           <div className="absolute inset-0 bg-background">
             <LazySurface>{renderActiveContent()}</LazySurface>
           </div>
@@ -310,6 +335,8 @@ export function MainPanel({ onEditAsset, onDeleteAsset, onConnectAsset }: MainPa
                   <KafkaPanel tabId={tab.id} />
                 ) : meta.assetType === "etcd" ? (
                   <EtcdPanel tabId={tab.id} />
+                ) : meta.assetType === "oss" ? (
+                  <OSSBrowserPanel tabId={tab.id} />
                 ) : (
                   <MongoDBPanel tabId={tab.id} />
                 )}

@@ -350,11 +350,8 @@ export function K8sClusterPage({ asset }: Props) {
     targetRef: sidebarRef,
   });
 
-  const loadInfo = (resetState = !initialSnapshot) => {
-    if (resetState || !info) {
-      setLoading(true);
-    }
-    setError(null);
+  // 仅 IO:拉取集群信息,所有 setState 在 promise 链里(可安全从 effect 调)。
+  const fetchInfo = (resetState: boolean) => {
     GetK8sClusterInfo(asset.ID)
       .then((result: string) => {
         const data = JSON.parse(result) as ClusterInfo;
@@ -413,10 +410,81 @@ export function K8sClusterPage({ asset }: Props) {
       });
   };
 
+  // 事件路径(错误重试等):同步置 loading/error 标记后拉取。
+  const loadInfo = (resetState = !initialSnapshot) => {
+    if (resetState || !info) {
+      setLoading(true);
+    }
+    setError(null);
+    fetchInfo(resetState);
+  };
+
+  // asset 变化时同步重置 loading/error(渲染期守卫;首挂由 useState 初值覆盖),拉取在 [asset.ID] effect 里。
+  const [prevAssetId, setPrevAssetId] = useState(asset.ID);
+  if (asset.ID !== prevAssetId) {
+    setPrevAssetId(asset.ID);
+    if (!initialSnapshot || !info) {
+      setLoading(true);
+    }
+    setError(null);
+  }
+
   const refreshInfo = () => {
     setRefreshing(true);
     setAutoRefreshingItems(new Set());
     const promises: Promise<unknown>[] = [];
+    const refreshNamespaceList = <T,>(
+      namespaces: string[],
+      setLoadingItems: React.Dispatch<React.SetStateAction<Set<string>>>,
+      loadItems: (assetID: number, namespace: string) => Promise<string>,
+      setItems: React.Dispatch<React.SetStateAction<Record<string, T[]>>>,
+      setErrors: React.Dispatch<React.SetStateAction<Record<string, string>>>
+    ) => {
+      for (const ns of namespaces) {
+        setLoadingItems((prev) => new Set(prev).add(ns));
+        promises.push(
+          loadItems(asset.ID, ns)
+            .then((result: string) => {
+              const data = JSON.parse(result) as T[];
+              setItems((prev) => ({ ...prev, [ns]: data }));
+              setErrors((prev) => {
+                const next = { ...prev };
+                delete next[ns];
+                return next;
+              });
+            })
+            .catch((e: unknown) => {
+              setErrors((prev) => ({ ...prev, [ns]: String(e) }));
+            })
+            .finally(() => {
+              setLoadingItems((prev) => {
+                const next = new Set(prev);
+                next.delete(ns);
+                return next;
+              });
+            })
+        );
+      }
+    };
+    const openPodDetailKeys = new Set<string>();
+    for (const tab of innerTabs) {
+      if (tab.id.startsWith("pod:")) {
+        const parts = tab.id.split(":");
+        openPodDetailKeys.add(`${parts[1]}/${parts.slice(2).join(":")}`);
+      } else if (tab.id.startsWith("log:")) {
+        const parts = tab.id.split(":");
+        openPodDetailKeys.add(`${parts[1]}/${parts.slice(2).join(":")}`);
+      } else if (tab.id.startsWith("log-deploy:")) {
+        const parts = tab.id.split(":");
+        const ns = parts[1];
+        const deploymentName = parts.slice(2).join(":");
+        const deployment = namespaceDeploymentList[ns]?.find((d) => d.name === deploymentName);
+        const podName = logTabStates[tab.id]?.currentPod || deployment?.pods[0]?.name;
+        if (podName) {
+          openPodDetailKeys.add(`${ns}/${podName}`);
+        }
+      }
+    }
 
     promises.push(
       GetK8sClusterInfo(asset.ID)
@@ -456,16 +524,84 @@ export function K8sClusterPage({ asset }: Props) {
       );
     }
 
+    refreshNamespaceList<PodListItem>(
+      Object.keys(namespacePodList),
+      setLoadingPods,
+      GetK8sNamespacePods,
+      setNamespacePodList,
+      setPodErrors
+    );
+    refreshNamespaceList<DeploymentListItem>(
+      Object.keys(namespaceDeploymentList),
+      setLoadingDeployments,
+      GetK8sNamespaceDeployments,
+      setNamespaceDeploymentList,
+      setDeploymentErrors
+    );
+    refreshNamespaceList<ServiceListItem>(
+      Object.keys(namespaceServiceList),
+      setLoadingServices,
+      GetK8sNamespaceServices,
+      setNamespaceServiceList,
+      setServiceErrors
+    );
+    refreshNamespaceList<ConfigMapListItem>(
+      Object.keys(namespaceConfigMapList),
+      setLoadingConfigMaps,
+      GetK8sNamespaceConfigMaps,
+      setNamespaceConfigMapList,
+      setConfigMapErrors
+    );
+    refreshNamespaceList<SecretListItem>(
+      Object.keys(namespaceSecretList),
+      setLoadingSecrets,
+      GetK8sNamespaceSecrets,
+      setNamespaceSecretList,
+      setSecretErrors
+    );
+
+    for (const key of openPodDetailKeys) {
+      const slashIdx = key.indexOf("/");
+      if (slashIdx === -1) continue;
+      const ns = key.slice(0, slashIdx);
+      const podName = key.slice(slashIdx + 1);
+      setLoadingPodDetails((prev) => new Set(prev).add(key));
+      promises.push(
+        GetK8sPodDetail(asset.ID, ns, podName)
+          .then((result: string) => {
+            const data = JSON.parse(result) as PodDetail;
+            setPodDetails((prev) => ({ ...prev, [key]: data }));
+            setPodDetailErrors((prev) => {
+              const next = { ...prev };
+              delete next[key];
+              return next;
+            });
+          })
+          .catch((e: unknown) => {
+            setPodDetailErrors((prev) => ({ ...prev, [key]: String(e) }));
+          })
+          .finally(() => {
+            setLoadingPodDetails((prev) => {
+              const next = new Set(prev);
+              next.delete(key);
+              return next;
+            });
+          })
+      );
+    }
+
     Promise.all(promises).finally(() => {
       setRefreshing(false);
     });
   };
 
-  const loadNamespaceResources = useCallback(
-    (ns: string) => {
-      if (namespaceResources[ns] || loadingNamespaces.has(ns)) return;
+  const inflightNamespacesRef = useRef<Set<string>>(new Set());
 
-      setLoadingNamespaces((prev) => new Set(prev).add(ns));
+  // 仅 IO:拉取 ns 资源,in-flight 用 ref 去重,所有 setState 在 promise 链里(可安全从 effect 调)。
+  const fetchNamespaceResources = useCallback(
+    (ns: string) => {
+      if (inflightNamespacesRef.current.has(ns)) return;
+      inflightNamespacesRef.current.add(ns);
       GetK8sNamespaceResources(asset.ID, ns)
         .then((result: string) => {
           const data = JSON.parse(result) as NamespaceResourcesData;
@@ -480,6 +616,7 @@ export function K8sClusterPage({ asset }: Props) {
           setNamespaceErrors((prev) => ({ ...prev, [ns]: String(e) }));
         })
         .finally(() => {
+          inflightNamespacesRef.current.delete(ns);
           setLoadingNamespaces((prev) => {
             const next = new Set(prev);
             next.delete(ns);
@@ -487,7 +624,17 @@ export function K8sClusterPage({ asset }: Props) {
           });
         });
     },
-    [asset.ID, namespaceResources, loadingNamespaces]
+    [asset.ID, setNamespaceResources, setNamespaceErrors, setLoadingNamespaces]
+  );
+
+  // 事件路径(展开分组/错误重试):同步标记 loading 并立即拉取。
+  const loadNamespaceResources = useCallback(
+    (ns: string) => {
+      if (namespaceResources[ns] || loadingNamespaces.has(ns)) return;
+      setLoadingNamespaces((prev) => new Set(prev).add(ns));
+      fetchNamespaceResources(ns);
+    },
+    [namespaceResources, loadingNamespaces, fetchNamespaceResources, setLoadingNamespaces]
   );
 
   const toggleNamespace = (ns: string) => {
@@ -503,34 +650,31 @@ export function K8sClusterPage({ asset }: Props) {
     });
   };
 
-  const loadPods = useCallback(
-    (ns: string) => {
-      if (namespacePodList[ns] || loadingPods.has(ns)) return;
+  const loadPods = (ns: string) => {
+    if (namespacePodList[ns] || loadingPods.has(ns)) return;
 
-      setLoadingPods((prev) => new Set(prev).add(ns));
-      GetK8sNamespacePods(asset.ID, ns)
-        .then((result: string) => {
-          const data = JSON.parse(result) as PodListItem[];
-          setNamespacePodList((prev) => ({ ...prev, [ns]: data }));
-          setPodErrors((prev) => {
-            const next = { ...prev };
-            delete next[ns];
-            return next;
-          });
-        })
-        .catch((e: unknown) => {
-          setPodErrors((prev) => ({ ...prev, [ns]: String(e) }));
-        })
-        .finally(() => {
-          setLoadingPods((prev) => {
-            const next = new Set(prev);
-            next.delete(ns);
-            return next;
-          });
+    setLoadingPods((prev) => new Set(prev).add(ns));
+    GetK8sNamespacePods(asset.ID, ns)
+      .then((result: string) => {
+        const data = JSON.parse(result) as PodListItem[];
+        setNamespacePodList((prev) => ({ ...prev, [ns]: data }));
+        setPodErrors((prev) => {
+          const next = { ...prev };
+          delete next[ns];
+          return next;
         });
-    },
-    [asset.ID, namespacePodList, loadingPods]
-  );
+      })
+      .catch((e: unknown) => {
+        setPodErrors((prev) => ({ ...prev, [ns]: String(e) }));
+      })
+      .finally(() => {
+        setLoadingPods((prev) => {
+          const next = new Set(prev);
+          next.delete(ns);
+          return next;
+        });
+      });
+  };
 
   const togglePods = (ns: string) => {
     setExpandedPods((prev) => {
@@ -545,121 +689,109 @@ export function K8sClusterPage({ asset }: Props) {
     });
   };
 
-  const loadDeployments = useCallback(
-    (ns: string) => {
-      if (namespaceDeploymentList[ns] || loadingDeployments.has(ns)) return;
+  const loadDeployments = (ns: string) => {
+    if (namespaceDeploymentList[ns] || loadingDeployments.has(ns)) return;
 
-      setLoadingDeployments((prev) => new Set(prev).add(ns));
-      GetK8sNamespaceDeployments(asset.ID, ns)
-        .then((result: string) => {
-          const data = JSON.parse(result) as DeploymentListItem[];
-          setNamespaceDeploymentList((prev) => ({ ...prev, [ns]: data }));
-          setDeploymentErrors((prev) => {
-            const next = { ...prev };
-            delete next[ns];
-            return next;
-          });
-        })
-        .catch((e: unknown) => {
-          setDeploymentErrors((prev) => ({ ...prev, [ns]: String(e) }));
-        })
-        .finally(() => {
-          setLoadingDeployments((prev) => {
-            const next = new Set(prev);
-            next.delete(ns);
-            return next;
-          });
+    setLoadingDeployments((prev) => new Set(prev).add(ns));
+    GetK8sNamespaceDeployments(asset.ID, ns)
+      .then((result: string) => {
+        const data = JSON.parse(result) as DeploymentListItem[];
+        setNamespaceDeploymentList((prev) => ({ ...prev, [ns]: data }));
+        setDeploymentErrors((prev) => {
+          const next = { ...prev };
+          delete next[ns];
+          return next;
         });
-    },
-    [asset.ID, namespaceDeploymentList, loadingDeployments]
-  );
-
-  const loadServices = useCallback(
-    (ns: string) => {
-      if (namespaceServiceList[ns] || loadingServices.has(ns)) return;
-
-      setLoadingServices((prev) => new Set(prev).add(ns));
-      GetK8sNamespaceServices(asset.ID, ns)
-        .then((result: string) => {
-          const data = JSON.parse(result) as ServiceListItem[];
-          setNamespaceServiceList((prev) => ({ ...prev, [ns]: data }));
-          setServiceErrors((prev) => {
-            const next = { ...prev };
-            delete next[ns];
-            return next;
-          });
-        })
-        .catch((e: unknown) => {
-          setServiceErrors((prev) => ({ ...prev, [ns]: String(e) }));
-        })
-        .finally(() => {
-          setLoadingServices((prev) => {
-            const next = new Set(prev);
-            next.delete(ns);
-            return next;
-          });
+      })
+      .catch((e: unknown) => {
+        setDeploymentErrors((prev) => ({ ...prev, [ns]: String(e) }));
+      })
+      .finally(() => {
+        setLoadingDeployments((prev) => {
+          const next = new Set(prev);
+          next.delete(ns);
+          return next;
         });
-    },
-    [asset.ID, namespaceServiceList, loadingServices]
-  );
+      });
+  };
 
-  const loadConfigMaps = useCallback(
-    (ns: string) => {
-      if (namespaceConfigMapList[ns] || loadingConfigMaps.has(ns)) return;
+  const loadServices = (ns: string) => {
+    if (namespaceServiceList[ns] || loadingServices.has(ns)) return;
 
-      setLoadingConfigMaps((prev) => new Set(prev).add(ns));
-      GetK8sNamespaceConfigMaps(asset.ID, ns)
-        .then((result: string) => {
-          const data = JSON.parse(result) as ConfigMapListItem[];
-          setNamespaceConfigMapList((prev) => ({ ...prev, [ns]: data }));
-          setConfigMapErrors((prev) => {
-            const next = { ...prev };
-            delete next[ns];
-            return next;
-          });
-        })
-        .catch((e: unknown) => {
-          setConfigMapErrors((prev) => ({ ...prev, [ns]: String(e) }));
-        })
-        .finally(() => {
-          setLoadingConfigMaps((prev) => {
-            const next = new Set(prev);
-            next.delete(ns);
-            return next;
-          });
+    setLoadingServices((prev) => new Set(prev).add(ns));
+    GetK8sNamespaceServices(asset.ID, ns)
+      .then((result: string) => {
+        const data = JSON.parse(result) as ServiceListItem[];
+        setNamespaceServiceList((prev) => ({ ...prev, [ns]: data }));
+        setServiceErrors((prev) => {
+          const next = { ...prev };
+          delete next[ns];
+          return next;
         });
-    },
-    [asset.ID, namespaceConfigMapList, loadingConfigMaps]
-  );
-
-  const loadSecrets = useCallback(
-    (ns: string) => {
-      if (namespaceSecretList[ns] || loadingSecrets.has(ns)) return;
-
-      setLoadingSecrets((prev) => new Set(prev).add(ns));
-      GetK8sNamespaceSecrets(asset.ID, ns)
-        .then((result: string) => {
-          const data = JSON.parse(result) as SecretListItem[];
-          setNamespaceSecretList((prev) => ({ ...prev, [ns]: data }));
-          setSecretErrors((prev) => {
-            const next = { ...prev };
-            delete next[ns];
-            return next;
-          });
-        })
-        .catch((e: unknown) => {
-          setSecretErrors((prev) => ({ ...prev, [ns]: String(e) }));
-        })
-        .finally(() => {
-          setLoadingSecrets((prev) => {
-            const next = new Set(prev);
-            next.delete(ns);
-            return next;
-          });
+      })
+      .catch((e: unknown) => {
+        setServiceErrors((prev) => ({ ...prev, [ns]: String(e) }));
+      })
+      .finally(() => {
+        setLoadingServices((prev) => {
+          const next = new Set(prev);
+          next.delete(ns);
+          return next;
         });
-    },
-    [asset.ID, namespaceSecretList, loadingSecrets]
-  );
+      });
+  };
+
+  const loadConfigMaps = (ns: string) => {
+    if (namespaceConfigMapList[ns] || loadingConfigMaps.has(ns)) return;
+
+    setLoadingConfigMaps((prev) => new Set(prev).add(ns));
+    GetK8sNamespaceConfigMaps(asset.ID, ns)
+      .then((result: string) => {
+        const data = JSON.parse(result) as ConfigMapListItem[];
+        setNamespaceConfigMapList((prev) => ({ ...prev, [ns]: data }));
+        setConfigMapErrors((prev) => {
+          const next = { ...prev };
+          delete next[ns];
+          return next;
+        });
+      })
+      .catch((e: unknown) => {
+        setConfigMapErrors((prev) => ({ ...prev, [ns]: String(e) }));
+      })
+      .finally(() => {
+        setLoadingConfigMaps((prev) => {
+          const next = new Set(prev);
+          next.delete(ns);
+          return next;
+        });
+      });
+  };
+
+  const loadSecrets = (ns: string) => {
+    if (namespaceSecretList[ns] || loadingSecrets.has(ns)) return;
+
+    setLoadingSecrets((prev) => new Set(prev).add(ns));
+    GetK8sNamespaceSecrets(asset.ID, ns)
+      .then((result: string) => {
+        const data = JSON.parse(result) as SecretListItem[];
+        setNamespaceSecretList((prev) => ({ ...prev, [ns]: data }));
+        setSecretErrors((prev) => {
+          const next = { ...prev };
+          delete next[ns];
+          return next;
+        });
+      })
+      .catch((e: unknown) => {
+        setSecretErrors((prev) => ({ ...prev, [ns]: String(e) }));
+      })
+      .finally(() => {
+        setLoadingSecrets((prev) => {
+          const next = new Set(prev);
+          next.delete(ns);
+          return next;
+        });
+      });
+  };
 
   const toggleDeployments = (ns: string) => {
     setExpandedDeployments((prev) => {
@@ -751,7 +883,7 @@ export function K8sClusterPage({ asset }: Props) {
           });
         });
     },
-    [asset.ID, refreshingItems]
+    [refreshingItems, asset.ID, setRefreshingItems, setNamespaceDeploymentList, setDeploymentErrors]
   );
 
   const refreshPodItem = useCallback(
@@ -792,7 +924,7 @@ export function K8sClusterPage({ asset }: Props) {
           });
         });
     },
-    [asset.ID, refreshingItems]
+    [refreshingItems, asset.ID, setRefreshingItems, setNamespacePodList, setPodErrors]
   );
 
   const refreshServiceItem = useCallback(
@@ -833,7 +965,7 @@ export function K8sClusterPage({ asset }: Props) {
           });
         });
     },
-    [asset.ID, refreshingItems]
+    [refreshingItems, asset.ID, setRefreshingItems, setNamespaceServiceList, setServiceErrors]
   );
 
   const refreshConfigMapItem = useCallback(
@@ -874,7 +1006,7 @@ export function K8sClusterPage({ asset }: Props) {
           });
         });
     },
-    [asset.ID, refreshingItems]
+    [refreshingItems, asset.ID, setRefreshingItems, setNamespaceConfigMapList, setConfigMapErrors]
   );
 
   const refreshSecretItem = useCallback(
@@ -915,7 +1047,7 @@ export function K8sClusterPage({ asset }: Props) {
           });
         });
     },
-    [asset.ID, refreshingItems]
+    [refreshingItems, asset.ID, setRefreshingItems, setNamespaceSecretList, setSecretErrors]
   );
 
   const silentReloadPodDetail = useCallback(
@@ -935,7 +1067,7 @@ export function K8sClusterPage({ asset }: Props) {
           setPodDetailErrors((prev) => ({ ...prev, [key]: String(e) }));
         });
     },
-    [asset.ID]
+    [asset.ID, setPodDetails, setPodDetailErrors]
   );
 
   const toggleAutoRefresh = useCallback(
@@ -994,37 +1126,34 @@ export function K8sClusterPage({ asset }: Props) {
     });
   };
 
-  const loadPodDetail = useCallback(
-    (ns: string, podName: string, force = false) => {
-      const key = `${ns}/${podName}`;
-      if (!force && (podDetails[key] || loadingPodDetails.has(key))) return;
+  const loadPodDetail = (ns: string, podName: string, force = false) => {
+    const key = `${ns}/${podName}`;
+    if (!force && (podDetails[key] || loadingPodDetails.has(key))) return;
 
-      setLoadingPodDetails((prev) => new Set(prev).add(key));
-      GetK8sPodDetail(asset.ID, ns, podName)
-        .then((result: string) => {
-          const data = JSON.parse(result) as PodDetail;
-          setPodDetails((prev) => ({ ...prev, [key]: data }));
-          setPodDetailErrors((prev) => {
-            const next = { ...prev };
-            delete next[key];
-            return next;
-          });
-        })
-        .catch((e: unknown) => {
-          setPodDetailErrors((prev) => ({ ...prev, [key]: String(e) }));
-        })
-        .finally(() => {
-          setLoadingPodDetails((prev) => {
-            const next = new Set(prev);
-            next.delete(key);
-            return next;
-          });
+    setLoadingPodDetails((prev) => new Set(prev).add(key));
+    GetK8sPodDetail(asset.ID, ns, podName)
+      .then((result: string) => {
+        const data = JSON.parse(result) as PodDetail;
+        setPodDetails((prev) => ({ ...prev, [key]: data }));
+        setPodDetailErrors((prev) => {
+          const next = { ...prev };
+          delete next[key];
+          return next;
         });
-    },
-    [asset.ID, podDetails, loadingPodDetails]
-  );
+      })
+      .catch((e: unknown) => {
+        setPodDetailErrors((prev) => ({ ...prev, [key]: String(e) }));
+      })
+      .finally(() => {
+        setLoadingPodDetails((prev) => {
+          const next = new Set(prev);
+          next.delete(key);
+          return next;
+        });
+      });
+  };
 
-  const updateLogTabState = useCallback((tabId: string, update: LogTabStateUpdate) => {
+  const updateLogTabState = (tabId: string, update: LogTabStateUpdate) => {
     setLogTabStates((prev) => {
       const existing = prev[tabId] || {
         logStreamID: null,
@@ -1036,10 +1165,10 @@ export function K8sClusterPage({ asset }: Props) {
       const nextState = typeof update === "function" ? update(existing) : { ...existing, ...update };
       return { ...prev, [tabId]: nextState };
     });
-  }, []);
+  };
 
   useEffect(() => {
-    loadInfo();
+    fetchInfo(!initialSnapshot);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [asset.ID]);
 
@@ -1093,17 +1222,20 @@ export function K8sClusterPage({ asset }: Props) {
   ]);
 
   const refreshPodItemRef = useRef(refreshPodItem);
-  refreshPodItemRef.current = refreshPodItem;
   const refreshDeploymentItemRef = useRef(refreshDeploymentItem);
-  refreshDeploymentItemRef.current = refreshDeploymentItem;
   const refreshServiceItemRef = useRef(refreshServiceItem);
-  refreshServiceItemRef.current = refreshServiceItem;
   const refreshConfigMapItemRef = useRef(refreshConfigMapItem);
-  refreshConfigMapItemRef.current = refreshConfigMapItem;
   const refreshSecretItemRef = useRef(refreshSecretItem);
-  refreshSecretItemRef.current = refreshSecretItem;
   const silentReloadPodDetailRef = useRef(silentReloadPodDetail);
-  silentReloadPodDetailRef.current = silentReloadPodDetail;
+
+  useEffect(() => {
+    refreshPodItemRef.current = refreshPodItem;
+    refreshDeploymentItemRef.current = refreshDeploymentItem;
+    refreshServiceItemRef.current = refreshServiceItem;
+    refreshConfigMapItemRef.current = refreshConfigMapItem;
+    refreshSecretItemRef.current = refreshSecretItem;
+    silentReloadPodDetailRef.current = silentReloadPodDetail;
+  });
 
   useEffect(() => {
     if (autoRefreshingItems.size === 0) return;
@@ -1145,11 +1277,22 @@ export function K8sClusterPage({ asset }: Props) {
   const activeNs =
     info && activeTabId.startsWith("ns:") ? info.namespaces.find((n) => n.name === activeTabId.slice(3)) : null;
 
+  // 激活 ns 页签的惰性加载:渲染期只做 loading 标记(守卫自终止),拉取由下方 effect 对已标记项发起。
+  // 拉取失败不再自动重试(namespaceErrors 守卫,原 effect 版本会无限重试),错误面板的重试按钮走 loadNamespaceResources 事件路径。
+  if (
+    activeNs &&
+    !namespaceResources[activeNs.name] &&
+    !namespaceErrors[activeNs.name] &&
+    !loadingNamespaces.has(activeNs.name)
+  ) {
+    setLoadingNamespaces((prev) => new Set(prev).add(activeNs.name));
+  }
+
   useEffect(() => {
-    if (activeNs && !namespaceResources[activeNs.name] && !loadingNamespaces.has(activeNs.name)) {
-      loadNamespaceResources(activeNs.name);
+    for (const ns of loadingNamespaces) {
+      if (!namespaceResources[ns]) fetchNamespaceResources(ns);
     }
-  }, [activeNs, namespaceResources, loadingNamespaces, loadNamespaceResources]);
+  }, [loadingNamespaces, namespaceResources, fetchNamespaceResources]);
 
   // Reload active pod detail whenever auto-refresh is active for the current pod tab
   useEffect(() => {
@@ -1367,7 +1510,7 @@ export function K8sClusterPage({ asset }: Props) {
               >
                 <span
                   className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                    node.status === "True" ? "bg-green-500" : "bg-red-500"
+                    node.status === "True" ? "bg-success" : "bg-destructive"
                   }`}
                 />
                 <span className="truncate">{node.name}</span>
@@ -1512,7 +1655,7 @@ export function K8sClusterPage({ asset }: Props) {
                                                 ) : (
                                                   <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground" />
                                                 )}
-                                                <span className="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0" />
+                                                <span className="w-1.5 h-1.5 rounded-full bg-info shrink-0" />
                                                 <span className="truncate">{deployment.name}</span>
                                                 <span className="ml-auto text-[10px] text-muted-foreground">
                                                   {deployment.ready}
@@ -1584,10 +1727,10 @@ export function K8sClusterPage({ asset }: Props) {
                                                       <span
                                                         className={`w-1.5 h-1.5 rounded-full shrink-0 ${
                                                           pod.status === "Running"
-                                                            ? "bg-green-500"
+                                                            ? "bg-success"
                                                             : pod.status === "Pending"
-                                                              ? "bg-yellow-500"
-                                                              : "bg-red-500"
+                                                              ? "bg-warning"
+                                                              : "bg-destructive"
                                                         }`}
                                                       />
                                                       <span className="truncate">{pod.name}</span>
@@ -1692,10 +1835,10 @@ export function K8sClusterPage({ asset }: Props) {
                                             <span
                                               className={`w-1.5 h-1.5 rounded-full shrink-0 ${
                                                 pod.status === "Running"
-                                                  ? "bg-green-500"
+                                                  ? "bg-success"
                                                   : pod.status === "Pending"
-                                                    ? "bg-yellow-500"
-                                                    : "bg-red-500"
+                                                    ? "bg-warning"
+                                                    : "bg-destructive"
                                               }`}
                                             />
                                             <span className="truncate">{pod.name}</span>
@@ -2367,7 +2510,7 @@ export function K8sClusterPage({ asset }: Props) {
                           </span>
                         </td>
                         <td className="py-2 pr-4">
-                          <span className={c.ready ? "text-green-600" : "text-red-600"}>
+                          <span className={c.ready ? "text-success" : "text-destructive"}>
                             {c.ready ? "\u2713" : "\u2717"}
                           </span>
                         </td>

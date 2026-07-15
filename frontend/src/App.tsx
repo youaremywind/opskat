@@ -10,6 +10,7 @@ import { SideAssistantPanel } from "@/components/ai/SideAssistantPanel";
 import { WindowControls } from "@/components/layout/WindowControls";
 import { TopBar } from "@/components/layout/TopBar";
 import { CommandPaletteDialog } from "@/components/command/CommandPaletteDialog";
+import { SnippetAssetDrawer } from "@/components/snippet/SnippetAssetDrawer";
 import { EdgeRevealStrip } from "@/components/layout/EdgeRevealStrip";
 import { useLayoutStore } from "@/stores/layoutStore";
 import { LeftPanel } from "@/components/layout/LeftPanel";
@@ -24,12 +25,12 @@ const GroupDialog = lazy(() => import("@/components/asset/GroupDialog").then((m)
 
 import { useAssetStore } from "@/stores/assetStore";
 import { useTerminalStore } from "@/stores/terminalStore";
-import { useQueryStore } from "@/stores/queryStore";
 import { useSFTPStore } from "@/stores/sftpStore";
 import { getAssetType } from "@/lib/assetTypes";
 import { useTabStore } from "@/stores/tabStore";
-import { useExtensionStore } from "@/extension";
+import { useSnippetStore } from "@/stores/snippetStore";
 import { bootstrapExtensions } from "@/extension/init";
+import { openAssetConnection } from "@/lib/openAsset";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { useExternalEditStore } from "@/stores/externalEditStore";
 import { asset_entity, group_entity } from "../wailsjs/go/models";
@@ -136,6 +137,9 @@ function App() {
   );
   const [aiPanelCollapsed, setAiPanelCollapsed] = useState(() => localStorage.getItem("ai_panel_collapsed") === "true");
   const [commandOpen, setCommandOpen] = useState(false);
+  // Snippet chosen in the command palette that needs a host picked before it runs.
+  const snippetRunTarget = useSnippetStore((s) => s.runTarget);
+  const clearSnippetHostPick = useSnippetStore((s) => s.clearHostPick);
   const [assetTreeWidth, setAssetTreeWidth] = useState(() => {
     const saved = localStorage.getItem("asset_tree_width");
     return saved ? Math.max(160, Math.min(480, Number(saved))) : 224;
@@ -261,60 +265,22 @@ function App() {
   };
 
   const handleConnectAsset = async (asset: asset_entity.Asset) => {
-    if (asset.Type === "k8s") {
-      const pageId = `k8s-${asset.ID}`;
-      const tabStore = useTabStore.getState();
-      const existing = tabStore.tabs.find((t) => t.id === pageId);
-      if (existing) {
-        tabStore.activateTab(pageId);
-      } else {
-        tabStore.openTab({
-          id: pageId,
-          type: "page",
-          label: asset.Name,
-          icon: asset.Icon || "kubernetes",
-          meta: { type: "page", pageId: "k8s-cluster", assetId: asset.ID },
-        });
-      }
-      return;
-    }
-    const def = getAssetType(asset.Type);
-    if (def?.connectAction === "query") {
-      useQueryStore.getState().openQueryTab(asset);
-      return;
-    }
-
-    // Check if this is an extension asset type
-    const ext = useExtensionStore.getState().getExtensionForAssetType(asset.Type);
-    if (ext) {
-      const connectPage = ext.manifest.frontend?.pages.find((p) => p.slot === "asset.connect");
-      if (connectPage) {
-        useTabStore.getState().openTab({
-          id: `ext-${asset.ID}-${connectPage.id}`,
-          type: "page",
-          label: asset.Name,
-          icon: ext.manifest.icon,
-          meta: {
-            type: "page",
-            pageId: connectPage.id,
-            extensionName: ext.name,
-            assetId: asset.ID,
-          },
-        });
-        return;
-      }
-    }
-
-    if (def?.connectAction !== "terminal") return;
-    try {
-      await connect(asset);
-    } catch (e) {
-      toast.error(`${asset.Name}: ${String(e)}`);
-    }
+    await openAssetConnection(asset);
   };
 
   const handleConnectAssetInNewTab = async (asset: asset_entity.Asset) => {
-    if (!getAssetType(asset.Type)?.canConnectInNewTab) return;
+    const def = getAssetType(asset.Type);
+    if (!def?.canConnectInNewTab) return;
+    if (def.connectAction === "page" && def.pageId) {
+      useTabStore.getState().openTab({
+        id: `${def.pageId}-${asset.ID}-${Date.now()}`,
+        type: "page",
+        label: asset.Name,
+        icon: asset.Icon || def.pageIcon,
+        meta: { type: "page", pageId: def.pageId, assetId: asset.ID },
+      });
+      return;
+    }
     try {
       await connect(asset, "", true);
     } catch (e) {
@@ -522,6 +488,7 @@ function App() {
           </Suspense>
           <PermissionDialog />
           <OpsctlApprovalDialog />
+          {snippetRunTarget && <SnippetAssetDrawer snippet={snippetRunTarget} onClose={clearSnippetHostPick} />}
           <Toaster richColors />
         </TooltipProvider>
       </ErrorBoundary>
