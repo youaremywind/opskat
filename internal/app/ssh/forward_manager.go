@@ -11,6 +11,7 @@ import (
 	"github.com/opskat/opskat/internal/app/sshadapt"
 	"github.com/opskat/opskat/internal/model/entity/forward_entity"
 	"github.com/opskat/opskat/internal/repository/forward_repo"
+	"github.com/opskat/opskat/internal/service/forward_svc"
 
 	"github.com/cago-frame/cago/pkg/logger"
 	"go.uber.org/zap"
@@ -46,24 +47,20 @@ type runningForward struct {
 }
 
 // RuleStatus 返回给前端的规则运行状态
-type RuleStatus struct {
-	RuleID int64  `json:"ruleId"`
-	Status string `json:"status"` // "running" | "error" | "stopped"
-	Error  string `json:"error,omitempty"`
-}
+type RuleStatus = forward_svc.RuleStatus
 
 // ForwardConfigWithStatus 配置 + 规则 + 运行状态
 type ForwardConfigWithStatus struct {
 	forward_entity.ForwardConfig
 	AssetName string           `json:"assetName"`
 	Rules     []RuleWithStatus `json:"rules"`
-	Status    string           `json:"status"` // "running" | "partial" | "error" | "stopped"
+	Status    string           `json:"status"`
 }
 
 // RuleWithStatus 规则 + 运行状态
 type RuleWithStatus struct {
 	forward_entity.ForwardRule
-	Status string `json:"status"` // "running" | "error" | "stopped"
+	Status string `json:"status"`
 	Error  string `json:"error,omitempty"`
 }
 
@@ -138,6 +135,33 @@ func (m *ForwardManager) stopConfigLocked(configID int64) {
 			rf.cancel()
 			m.releaseClientLocked(rf.assetID)
 			delete(m.running, ruleID)
+		}
+	}
+}
+
+// CloseAsset 停掉指定资产的全部转发规则并关闭它的 SSH 连接。
+// 不走 releaseClientLocked：那是按引用计数递减，而资产已经被删除，
+// 这条连接不会再有新的使用者，必须直接关掉，否则本地监听端口会一直挂着。
+func (m *ForwardManager) CloseAsset(assetID int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for ruleID, rf := range m.running {
+		if rf.assetID == assetID {
+			rf.cancel()
+			delete(m.running, ruleID)
+		}
+	}
+	fc, ok := m.clients[assetID]
+	if !ok {
+		return
+	}
+	delete(m.clients, assetID)
+	if err := fc.client.Close(); err != nil {
+		logger.Default().Warn("close SSH client", zap.Int64("assetID", assetID), zap.Error(err))
+	}
+	for _, c := range fc.closers {
+		if err := c.Close(); err != nil {
+			logger.Default().Warn("close closer", zap.Int64("assetID", assetID), zap.Error(err))
 		}
 	}
 }

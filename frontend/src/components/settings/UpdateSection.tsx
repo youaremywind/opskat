@@ -12,14 +12,7 @@ import {
   CardDescription,
   CardHeader,
   CardTitle,
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
+  ConfirmDialog,
   Input,
   Switch,
 } from "@opskat/ui";
@@ -156,24 +149,18 @@ export function UpdateSection() {
     }
   };
 
+  // opsctl / Skill 重装失败的 toast 已挪到 App.tsx 全局监听——重装在启动时触发，设置页
+  // 未必挂载。这里只保留手动「下载并安装」流程的进度事件。
   useEffect(() => {
     const cancelProgress = EventsOn("update:progress", (data: { downloaded: number; total: number }) => {
       if (data.total > 0) {
         setProgress(Math.round((data.downloaded / data.total) * 100));
       }
     });
-    const cancelOpsctlErr = EventsOn("update:opsctl-error", (errMsg: string) => {
-      toast.error(t("appUpdate.opsctlUpdateFailed", { error: errMsg }));
-    });
-    const cancelSkillErr = EventsOn("update:skill-error", (errMsg: string) => {
-      toast.error(t("appUpdate.skillUpdateFailed", { error: errMsg }));
-    });
     return () => {
       cancelProgress();
-      cancelOpsctlErr();
-      cancelSkillErr();
     };
-  }, [t]);
+  }, []);
 
   const handleCheck = async () => {
     setChecking(true);
@@ -389,25 +376,23 @@ export function UpdateSection() {
             )}
           </div>
         )}
-        <AlertDialog open={showChecksumDialog} onOpenChange={setShowChecksumDialog}>
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>{t("appUpdate.checksumSkipTitle")}</AlertDialogTitle>
-              <AlertDialogDescription>
-                {t("appUpdate.checksumFetchFailed")}
-                <br />
-                <br />
-                {t("appUpdate.checksumSkipConfirm")}
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel>{t("appUpdate.checksumSkipCancel")}</AlertDialogCancel>
-              <AlertDialogAction onClick={() => handleUpdate(true)}>
-                {t("appUpdate.checksumSkipAction")}
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
+        <ConfirmDialog
+          open={showChecksumDialog}
+          onOpenChange={setShowChecksumDialog}
+          title={t("appUpdate.checksumSkipTitle")}
+          description={
+            <>
+              {t("appUpdate.checksumFetchFailed")}
+              <br />
+              <br />
+              {t("appUpdate.checksumSkipConfirm")}
+            </>
+          }
+          cancelText={t("appUpdate.checksumSkipCancel")}
+          confirmText={t("appUpdate.checksumSkipAction")}
+          variant="default"
+          onConfirm={() => handleUpdate(true)}
+        />
       </CardContent>
     </Card>
   );

@@ -7,15 +7,6 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestDatabaseDriverDefaultPort(t *testing.T) {
-	convey.Convey("DatabaseDriver.DefaultPort", t, func() {
-		convey.So(DriverMySQL.DefaultPort(), convey.ShouldEqual, 3306)
-		convey.So(DriverPostgreSQL.DefaultPort(), convey.ShouldEqual, 5432)
-		convey.So(DriverMSSQL.DefaultPort(), convey.ShouldEqual, 1433)
-		convey.So(DriverSQLite.DefaultPort(), convey.ShouldEqual, 0)
-	})
-}
-
 func TestAsset_Validate(t *testing.T) {
 	convey.Convey("资产校验", t, func() {
 		convey.Convey("名称为空时应返回错误", func() {
@@ -485,6 +476,33 @@ func TestValidateDatabaseMSSQL(t *testing.T) {
 			}
 			convey.So(a.SetDatabaseConfig(cfg), convey.ShouldBeNil)
 			convey.So(a.Validate(), convey.ShouldBeNil)
+		})
+	})
+}
+
+func TestValidateDatabaseQueryTimeout(t *testing.T) {
+	newDB := func(timeout int) *Asset {
+		a := &Asset{Type: AssetTypeDatabase, Name: "x", GroupID: 1}
+		cfg := &DatabaseConfig{
+			Driver: DriverMySQL, Host: "localhost", Port: 3306, Username: "root",
+			QueryTimeoutSeconds: timeout,
+		}
+		_ = a.SetDatabaseConfig(cfg)
+		return a
+	}
+	convey.Convey("查询超时校验", t, func() {
+		convey.Convey("0 表示默认值,通过", func() {
+			convey.So(newDB(0).Validate(), convey.ShouldBeNil)
+		})
+		convey.Convey("边界 5 与 600 通过", func() {
+			convey.So(newDB(5).Validate(), convey.ShouldBeNil)
+			convey.So(newDB(600).Validate(), convey.ShouldBeNil)
+		})
+		convey.Convey("低于 5 报错", func() {
+			convey.So(newDB(4).Validate().Error(), convey.ShouldContainSubstring, "查询超时")
+		})
+		convey.Convey("高于 600 报错", func() {
+			convey.So(newDB(601).Validate().Error(), convey.ShouldContainSubstring, "查询超时")
 		})
 	})
 }

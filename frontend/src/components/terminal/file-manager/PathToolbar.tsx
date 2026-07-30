@@ -95,7 +95,8 @@ export function PathToolbar({
         <Home className="h-3.5 w-3.5" />
       </Button>
       <Input
-        className="h-6 text-xs flex-1 min-w-0"
+        data-testid="sftp-path-input"
+        className="h-6 py-0 text-xs flex-1 min-w-0"
         value={pathInput}
         onChange={(e) => onPathInputChange(e.target.value)}
         onKeyDown={(e) => {

@@ -22,14 +22,7 @@ import remarkGfm from "remark-gfm";
 import {
   Button,
   ScrollArea,
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
+  ConfirmDialog,
   Tooltip,
   TooltipContent,
   TooltipProvider,
@@ -45,6 +38,7 @@ import {
 } from "@/stores/aiStore";
 import { AIChatInput, type AIChatInputDraft, type AIChatInputHandle } from "@/components/ai/AIChatInput";
 import { UserMessage } from "@/components/ai/UserMessage";
+import { ModelSwitcher } from "@/components/ai/ModelSwitcher";
 import { useTabStore, type AITabMeta } from "@/stores/tabStore";
 import { formatModKey } from "@/stores/shortcutStore";
 import { ToolBlock } from "@/components/ai/ToolBlock";
@@ -607,49 +601,55 @@ export function AIChatContent({
                 userMessageHistory={userMessageHistory}
                 placeholder={t("ai.sendPlaceholder")}
               />
-              <div className="flex items-center justify-between px-3 pb-2">
-                <span className="text-xs text-muted-foreground/40 select-none">
-                  {sendOnEnter
-                    ? `Enter ${t("ai.sendShortcutHint")}`
-                    : `${formatModKey("Enter")} ${t("ai.sendShortcutHint")}`}
-                </span>
-                {sending ? (
-                  <Button
-                    size="icon"
-                    variant="destructive"
-                    className="h-7 w-7 shrink-0 rounded-lg"
-                    onClick={handleStop}
-                  >
-                    <Square className="h-3 w-3" />
-                  </Button>
+              <div className="flex items-center justify-between gap-2 px-3 pb-2">
+                {(tabId ?? sideTabId) ? (
+                  <ModelSwitcher conversationId={conversationId} hostTabId={(tabId ?? sideTabId) as string} />
                 ) : (
-                  <Button
-                    size="icon"
-                    className="h-7 w-7 shrink-0 rounded-lg"
-                    onClick={() => inputRef.current?.submit()}
-                    disabled={empty}
-                  >
-                    <CornerDownLeft className="h-3.5 w-3.5" />
-                  </Button>
+                  <span />
                 )}
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-muted-foreground/40 select-none">
+                    {sendOnEnter
+                      ? `Enter ${t("ai.sendShortcutHint")}`
+                      : `${formatModKey("Enter")} ${t("ai.sendShortcutHint")}`}
+                  </span>
+                  {sending ? (
+                    <Button
+                      size="icon"
+                      variant="destructive"
+                      data-testid="ai-stop-button"
+                      className="h-7 w-7 shrink-0 rounded-lg"
+                      onClick={handleStop}
+                    >
+                      <Square className="h-3 w-3" />
+                    </Button>
+                  ) : (
+                    <Button
+                      size="icon"
+                      data-testid="ai-send-button"
+                      className="h-7 w-7 shrink-0 rounded-lg"
+                      onClick={() => inputRef.current?.submit()}
+                      disabled={empty}
+                    >
+                      <CornerDownLeft className="h-3.5 w-3.5" />
+                    </Button>
+                  )}
+                </div>
               </div>
             </div>
           </div>
         </div>
 
-        {/* Regenerate confirmation dialog */}
-        <AlertDialog open={regenerateTarget !== null} onOpenChange={(open) => !open && setRegenerateTarget(null)}>
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>{t("ai.regenerateTitle")}</AlertDialogTitle>
-              <AlertDialogDescription>{t("ai.regenerateConfirm")}</AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel>{t("action.cancel")}</AlertDialogCancel>
-              <AlertDialogAction onClick={confirmRegenerate}>{t("action.confirm")}</AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
+        <ConfirmDialog
+          open={regenerateTarget !== null}
+          onOpenChange={(open) => !open && setRegenerateTarget(null)}
+          title={t("ai.regenerateTitle")}
+          description={t("ai.regenerateConfirm")}
+          cancelText={t("action.cancel")}
+          confirmText={t("action.confirm")}
+          variant="default"
+          onConfirm={confirmRegenerate}
+        />
       </div>
     </CompactContext>
   );

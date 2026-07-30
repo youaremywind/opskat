@@ -34,7 +34,7 @@ func KafkaAlterTopicConfigRequestFromArgs(assetID int64, args map[string]any) (k
 	var updates []kafka_svc.TopicConfigMutation
 	raw := strings.TrimSpace(aictx.ArgString(args, "config_updates"))
 	if raw == "" {
-		return kafka_svc.AlterTopicConfigRequest{}, fmt.Errorf("config_updates is required for kafka_topic update_config")
+		return kafka_svc.AlterTopicConfigRequest{}, fmt.Errorf("--config-updates is required for \"topic update-config\"")
 	}
 	if err := json.Unmarshal([]byte(raw), &updates); err != nil {
 		return kafka_svc.AlterTopicConfigRequest{}, fmt.Errorf("config_updates must be a JSON array: %w", err)
@@ -57,7 +57,7 @@ func kafkaIncreasePartitionsRequestFromArgs(assetID int64, args map[string]any) 
 func KafkaDeleteRecordsRequestFromArgs(assetID int64, args map[string]any) (kafka_svc.DeleteRecordsRequest, error) {
 	raw := strings.TrimSpace(aictx.ArgString(args, "records"))
 	if raw == "" {
-		return kafka_svc.DeleteRecordsRequest{}, fmt.Errorf("records is required for kafka_topic delete_records")
+		return kafka_svc.DeleteRecordsRequest{}, fmt.Errorf("--records is required for \"topic delete-records\"")
 	}
 	var partitions []kafka_svc.DeleteRecordsPartition
 	if err := json.Unmarshal([]byte(raw), &partitions); err != nil {
@@ -191,7 +191,7 @@ func KafkaDeleteSchemaRequestFromArgs(assetID int64, args map[string]any) kafka_
 		AssetID:   assetID,
 		Subject:   aictx.ArgString(args, "subject"),
 		Version:   aictx.ArgString(args, "version"),
-		Permanent: argBool(args, "permanent"),
+		Permanent: aictx.ArgBool(args, "permanent"),
 	}
 }
 
@@ -215,7 +215,7 @@ func KafkaConnectorConfigRequestFromArgs(assetID int64, args map[string]any) (ka
 		return kafka_svc.ConnectorConfigRequest{}, err
 	}
 	if len(config) == 0 {
-		return kafka_svc.ConnectorConfigRequest{}, fmt.Errorf("config is required for kafka_connect connector config operation")
+		return kafka_svc.ConnectorConfigRequest{}, fmt.Errorf("--config is required for \"connect create\" and \"connect update-config\"")
 	}
 	return kafka_svc.ConnectorConfigRequest{
 		AssetID: assetID,
@@ -230,8 +230,8 @@ func KafkaRestartConnectorRequestFromArgs(assetID int64, args map[string]any) ka
 		AssetID:      assetID,
 		Cluster:      aictx.ArgString(args, "cluster"),
 		Name:         aictx.ArgString(args, "connector"),
-		IncludeTasks: argBool(args, "include_tasks"),
-		OnlyFailed:   argBool(args, "only_failed"),
+		IncludeTasks: aictx.ArgBool(args, "include_tasks"),
+		OnlyFailed:   aictx.ArgBool(args, "only_failed"),
 	}
 }
 
@@ -262,10 +262,10 @@ func kafkaInspectRequestFromArgs(assetID int64, args map[string]any) (kafka_svc.
 		return kafka_svc.BrowseMessagesRequest{}, err
 	}
 	if partition == nil {
-		return kafka_svc.BrowseMessagesRequest{}, fmt.Errorf("partition is required for kafka_message inspect")
+		return kafka_svc.BrowseMessagesRequest{}, fmt.Errorf("--partition is required for \"message inspect\"")
 	}
 	if _, ok := args["offset"]; !ok {
-		return kafka_svc.BrowseMessagesRequest{}, fmt.Errorf("offset is required for kafka_message inspect")
+		return kafka_svc.BrowseMessagesRequest{}, fmt.Errorf("--offset is required for \"message inspect\"")
 	}
 	return kafka_svc.BrowseMessagesRequest{
 		AssetID:       assetID,
@@ -325,7 +325,7 @@ func marshalKafkaResult(result any) (string, error) {
 	return string(data), nil
 }
 
-// ArgOptionalPartition parses the optional kafka_message partition field.
+// ArgOptionalPartition parses the optional --partition flag of the "message" commands.
 func ArgOptionalPartition(args map[string]any) (*int32, error) {
 	const key = "partition"
 	value, ok := args[key]
@@ -373,16 +373,4 @@ func ArgOptionalPartition(args map[string]any) (*int32, error) {
 	}
 	out := int32(n)
 	return &out, nil
-}
-
-func argBool(args map[string]any, key string) bool {
-	if v, ok := args[key]; ok {
-		switch b := v.(type) {
-		case bool:
-			return b
-		case string:
-			return strings.EqualFold(strings.TrimSpace(b), "true")
-		}
-	}
-	return false
 }

@@ -87,7 +87,7 @@ func TestAuditMiddleware_WritesAuditOnSuccess(t *testing.T) {
 
 		ctx := aictx.WithAuditSource(context.Background(), "ai")
 		ctx = aictx.WithConversationID(ctx, 99)
-		runAuditChain(t, ctx, "run_command", "tu_ok_1",
+		runAuditChain(t, ctx, "exec", "tu_ok_1",
 			map[string]any{"asset_id": float64(7), "command": "uptime"},
 			nil,
 			func() (*agent.ToolResultBlock, error) {
@@ -99,7 +99,7 @@ func TestAuditMiddleware_WritesAuditOnSuccess(t *testing.T) {
 
 		waitForAudit(t, mockRepo, 1)
 		entry := mockRepo.logs[0]
-		So(entry.ToolName, ShouldEqual, "run_command")
+		So(entry.ToolName, ShouldEqual, "exec")
 		So(entry.Source, ShouldEqual, "ai")
 		So(entry.ConversationID, ShouldEqual, int64(99))
 		So(entry.Command, ShouldEqual, "uptime")
@@ -121,8 +121,8 @@ func TestAuditMiddleware_WritesAuditOnError(t *testing.T) {
 			}
 		})
 
-		runAuditChain(t, context.Background(), "exec_sql", "tu_err_1",
-			map[string]any{"asset_id": float64(1), "sql": "SELECT 1"},
+		runAuditChain(t, context.Background(), "exec", "tu_err_1",
+			map[string]any{"asset_id": float64(1), "command": "SELECT 1"},
 			nil,
 			func() (*agent.ToolResultBlock, error) {
 				return &agent.ToolResultBlock{
@@ -134,7 +134,7 @@ func TestAuditMiddleware_WritesAuditOnError(t *testing.T) {
 
 		waitForAudit(t, mockRepo, 1)
 		entry := mockRepo.logs[0]
-		So(entry.ToolName, ShouldEqual, "exec_sql")
+		So(entry.ToolName, ShouldEqual, "exec")
 		So(entry.Command, ShouldEqual, "SELECT 1")
 		So(entry.Success, ShouldEqual, 0)
 		So(entry.Error, ShouldEqual, "connection refused")
@@ -157,7 +157,7 @@ func TestAuditMiddleware_CapturesRecordedDecision(t *testing.T) {
 			DecisionSource: aictx.SourceGrantAllow,
 			MatchedPattern: "uptime",
 		}
-		runAuditChain(t, context.Background(), "run_command", "tu_dec_1",
+		runAuditChain(t, context.Background(), "exec", "tu_dec_1",
 			map[string]any{"asset_id": float64(1), "command": "uptime"},
 			decision,
 			func() (*agent.ToolResultBlock, error) {
@@ -172,5 +172,50 @@ func TestAuditMiddleware_CapturesRecordedDecision(t *testing.T) {
 		So(entry.Decision, ShouldEqual, "allow")
 		So(entry.DecisionSource, ShouldEqual, aictx.SourceGrantAllow)
 		So(entry.MatchedPattern, ShouldEqual, "uptime")
+	})
+}
+
+func TestAuditMiddleware_DeniedDecisionIsToolError(t *testing.T) {
+	Convey("a recorded deny is a failed tool result even when the handler returns nil error", t, func() {
+		mockRepo := &mockAuditRepo{}
+		origRepo := audit_repo.Audit()
+		audit_repo.RegisterAudit(mockRepo)
+		t.Cleanup(func() {
+			audit_repo.RegisterAudit(origRepo)
+		})
+
+		tool := &recordingTool{
+			name: "run_command",
+			fill: &aictx.CheckResult{
+				Decision:       aictx.Deny,
+				DecisionSource: aictx.SourceUserDeny,
+			},
+			out: func() (*agent.ToolResultBlock, error) {
+				return &agent.ToolResultBlock{
+					Content: []agent.ContentBlock{agent.TextBlock{Text: "USER DENIED: command rejected"}},
+				}, nil
+			},
+		}
+		dispatcher := &agent.ToolDispatcher{
+			Tools: []agent.Tool{tool},
+			Middleware: []agent.ToolHookEntry[agent.ToolMiddleware]{
+				{Matcher: ".*", Fn: auditMiddleware},
+			},
+		}
+
+		result := dispatcher.Run(context.Background(), agent.DispatchInput{
+			ToolName:  "run_command",
+			ToolUseID: "tu_deny",
+			Input:     map[string]any{"asset_id": float64(1), "command": "cat /etc/shadow"},
+		})
+
+		So(result.Output, ShouldNotBeNil)
+		So(result.Output.IsError, ShouldBeTrue)
+		waitForAudit(t, mockRepo, 1)
+		entry := mockRepo.logs[0]
+		So(entry.Decision, ShouldEqual, "deny")
+		So(entry.DecisionSource, ShouldEqual, aictx.SourceUserDeny)
+		So(entry.Success, ShouldEqual, 0)
+		So(entry.Error, ShouldEqual, "USER DENIED: command rejected")
 	})
 }

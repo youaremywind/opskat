@@ -34,7 +34,7 @@ process.env.OPSKAT_EXTENSIONS = "0";
 // this config is re-evaluated in every worker, so the vars reach the test process.
 // Optional by design: .env is absent on CI / a fresh clone, so we skip when it's
 // not there; an explicit env var already set always wins over the file.
-// Convention & usage: docs/e2e-harness-guide.md §6.
+// Convention & usage: docs/references/e2e-harness-guide.md §6.
 const envFile = join(__dirname, "..", ".env");
 if (existsSync(envFile)) {
   for (const line of readFileSync(envFile, "utf8").split("\n")) {
@@ -68,6 +68,14 @@ const REDIS_MOCK = join(__dirname, "fixtures", "redis-mock.mjs");
 const SSH_MOCK_PORT = 34218;
 process.env.SSH_MOCK_PORT = String(SSH_MOCK_PORT);
 
+// A tiny in-harness OpenAI-compatible chat-completions server (pure Node, see
+// fixtures/openai-mock.mjs), so an AI provider row pointing at it drives the real
+// AI stack with a *scripted* model — the spec decides which tool the "model"
+// calls. Read back from the spec via process.env.OPENAI_MOCK_PORT.
+const OPENAI_MOCK_PORT = 34219;
+process.env.OPENAI_MOCK_PORT = String(OPENAI_MOCK_PORT);
+const OPENAI_MOCK = join(__dirname, "fixtures", "openai-mock.mjs");
+
 export default defineConfig({
   testDir: "./tests",
   timeout: 60_000,
@@ -98,6 +106,16 @@ export default defineConfig({
       command: `go run ./e2e/fixtures/ssh-mock ${SSH_MOCK_PORT}`,
       cwd: "..",
       port: SSH_MOCK_PORT,
+      reuseExistingServer: !process.env.CI,
+      stdout: "ignore",
+      stderr: "ignore",
+    },
+    {
+      // Mock OpenAI-compatible API for the AI exec specs. Same shape as the Redis
+      // mock (pure Node, raw TCP `port` readiness); the specs POST a script to it
+      // over HTTP before each AI turn.
+      command: `node "${OPENAI_MOCK}" ${OPENAI_MOCK_PORT}`,
+      port: OPENAI_MOCK_PORT,
       reuseExistingServer: !process.env.CI,
       stdout: "ignore",
       stderr: "ignore",

@@ -30,7 +30,7 @@ func cmdSSH(ctx context.Context, args []string) int {
 		return 1
 	}
 
-	// 尝试通过 proxy 连接（复用 ops-cat 连接池）
+	// 尝试通过 proxy 连接（复用 opskat 连接池）
 	if proxy := getSSHProxyClient(); proxy != nil {
 		return cmdSSHViaProxy(proxy, asset.ID)
 	}
@@ -39,7 +39,7 @@ func cmdSSH(ctx context.Context, args []string) int {
 	return cmdSSHDirect(ctx, asset.ID)
 }
 
-// cmdSSHViaProxy 通过 ops-cat 连接池代理建立交互式 SSH
+// cmdSSHViaProxy 通过 opskat 连接池代理建立交互式 SSH
 func cmdSSHViaProxy(proxy *sshpool.Client, assetID int64) int {
 	fd := int(os.Stdin.Fd())
 	oldState, err := term.MakeRaw(fd)
@@ -76,7 +76,7 @@ func cmdSSHViaProxy(proxy *sshpool.Client, assetID int64) int {
 	return exitCode
 }
 
-// cmdSSHDirect 直连建立交互式 SSH（原逻辑）
+// cmdSSHDirect 直连建立交互式 SSH。
 func cmdSSHDirect(ctx context.Context, assetID int64) int {
 	client, cleanup, err := helper.DialSSHClient(ctx, assetID)
 	if err != nil {

@@ -53,14 +53,14 @@ func TestEventTranslator_ThinkingThenToolStart(t *testing.T) {
 			agent.Event{Kind: agent.EventThinkingDelta, Delta: "..."},
 			agent.Event{Kind: agent.EventPreToolUse, Tool: &agent.ToolEvent{
 				ToolUseID: "tu_1",
-				Name:      "run_command",
+				Name:      "exec",
 				Input:     map[string]any{"asset_id": float64(1), "command": "uptime"},
 			}},
 		)
 		So(out, ShouldHaveLength, 3)
 		So(out[1].Type, ShouldEqual, "thinking_done")
 		So(out[2].Type, ShouldEqual, "tool_start")
-		So(out[2].ToolName, ShouldEqual, "run_command")
+		So(out[2].ToolName, ShouldEqual, "exec")
 		So(out[2].ToolCallID, ShouldEqual, "tu_1")
 		So(out[2].ToolInput, ShouldContainSubstring, `"command":"uptime"`)
 	})
@@ -71,7 +71,7 @@ func TestEventTranslator_PostToolUse(t *testing.T) {
 		out := drain(NewStreamTranslator(),
 			agent.Event{Kind: agent.EventPostToolUse, Tool: &agent.ToolEvent{
 				ToolUseID: "tu_2",
-				Name:      "exec_sql",
+				Name:      "list_assets",
 				Output: &agent.ToolResultBlock{
 					Content: []agent.ContentBlock{
 						&agent.TextBlock{Text: "row1\n"},
@@ -82,9 +82,31 @@ func TestEventTranslator_PostToolUse(t *testing.T) {
 		)
 		So(out, ShouldHaveLength, 1)
 		So(out[0].Type, ShouldEqual, "tool_result")
-		So(out[0].ToolName, ShouldEqual, "exec_sql")
+		So(out[0].ToolName, ShouldEqual, "list_assets")
 		So(out[0].ToolCallID, ShouldEqual, "tu_2")
 		So(out[0].Content, ShouldEqual, "row1\nrow2\n")
+	})
+}
+
+func TestEventTranslator_PostToolUsePreservesErrorState(t *testing.T) {
+	Convey("EventPostToolUse preserves ToolResultBlock.IsError", t, func() {
+		out := drain(NewStreamTranslator(), agent.Event{
+			Kind: agent.EventPostToolUse,
+			Tool: &agent.ToolEvent{
+				ToolUseID: "tu_denied",
+				Name:      "upload_file",
+				Output: &agent.ToolResultBlock{
+					IsError: true,
+					Content: []agent.ContentBlock{
+						agent.TextBlock{Text: "USER DENIED: transfer rejected"},
+					},
+				},
+			},
+		})
+
+		So(out, ShouldHaveLength, 1)
+		So(out[0].Type, ShouldEqual, "tool_result")
+		So(out[0].IsError, ShouldBeTrue)
 	})
 }
 

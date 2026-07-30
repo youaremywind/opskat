@@ -2,12 +2,18 @@ package command
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
+
+	"github.com/cago-frame/cago/pkg/logger"
+	"go.uber.org/zap"
 
 	"github.com/opskat/opskat/internal/ai/aictx"
 	"github.com/opskat/opskat/internal/ai/helper"
 	"github.com/opskat/opskat/internal/ai/tool"
+	"github.com/opskat/opskat/internal/approval"
+	"github.com/opskat/opskat/internal/repository/asset_repo"
 	"github.com/opskat/opskat/internal/sshpool"
 )
 
@@ -39,21 +45,46 @@ func cmdCp(ctx context.Context, handlers map[string]tool.ToolHandlerFunc, args [
 	srcIsRemote := srcAssetID > 0
 	dstIsRemote := dstAssetID > 0
 
-	argsJSON := fmt.Sprintf(`{"src":%q,"dst":%q}`, src, dst)
-
-	// cp 不需要审批；若调用方提供了 session，仍注入到 ctx 以便审计归组
 	if session != "" {
 		ctx = aictx.WithSessionID(ctx, session)
 	}
+	ctx = aictx.WithAuditSource(ctx, "opsctl")
+
+	primaryAssetID := dstAssetID
+	if primaryAssetID == 0 {
+		primaryAssetID = srcAssetID
+	}
+	argsJSON, err := buildCpAuditArgs(src, dst, srcAssetID, dstAssetID, primaryAssetID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return 1
+	}
+
+	// 文件传输与执行命令等价（写 authorized_keys / cron / 被 systemd 引用的脚本都够
+	// 换来一次执行），因此必须与 exec 一样过审批。审批放在 proxy 与直连分支的共同上游，
+	// 否则走 proxy 的那条路径会漏。
+	approvalCtx, approvalResult, approvalAssetID, err := requireCpApproval(ctx, srcAssetID, srcPath, dstAssetID, dstPath, src, dst)
+	if err != nil {
+		argsJSON, marshalErr := buildCpAuditArgs(src, dst, srcAssetID, dstAssetID, approvalAssetID)
+		if marshalErr != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", marshalErr)
+			return 1
+		}
+		writeOpsctlAudit(approvalCtx, "cp", argsJSON, "", err, approvalResult.ToCheckResult())
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return 1
+	}
+	ctx = approvalCtx
+	decision := approvalResult.ToCheckResult()
 
 	// 尝试通过 proxy 执行文件传输
-	if proxy := getSSHProxyClient(); proxy != nil {
+	if proxy := cpSSHProxyClientFn(); proxy != nil {
 		exitCode := cmdCpViaProxy(proxy, srcAssetID, srcPath, dstAssetID, dstPath, srcIsRemote, dstIsRemote, src, dst)
 		var cpErr error
 		if exitCode != 0 {
 			cpErr = fmt.Errorf("cp via proxy failed with exit code %d", exitCode)
 		}
-		writeOpsctlAudit(ctx, "cp", argsJSON, fmt.Sprintf(`{"status":"completed","exit_code":%d}`, exitCode), cpErr, nil)
+		writeOpsctlAudit(ctx, "cp", argsJSON, fmt.Sprintf(`{"status":"completed","exit_code":%d}`, exitCode), cpErr, decision)
 		return exitCode
 	}
 
@@ -70,7 +101,7 @@ func cmdCp(ctx context.Context, handlers map[string]tool.ToolHandlerFunc, args [
 			"asset_id":    float64(dstAssetID),
 			"local_path":  src,
 			"remote_path": dstPath,
-		}, nil)
+		}, decision)
 		return exitCode
 
 	case srcIsRemote && !dstIsRemote:
@@ -79,7 +110,7 @@ func cmdCp(ctx context.Context, handlers map[string]tool.ToolHandlerFunc, args [
 			"asset_id":    float64(srcAssetID),
 			"remote_path": srcPath,
 			"local_path":  dst,
-		}, nil)
+		}, decision)
 		return exitCode
 
 	default:
@@ -89,13 +120,99 @@ func cmdCp(ctx context.Context, handlers map[string]tool.ToolHandlerFunc, args [
 		if cpErr != nil {
 			auditResult = fmt.Sprintf(`{"error":%q}`, cpErr.Error())
 		}
-		writeOpsctlAudit(ctx, "cp", argsJSON, auditResult, cpErr, nil)
+		writeOpsctlAudit(ctx, "cp", argsJSON, auditResult, cpErr, decision)
 		if cpErr != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", cpErr)
 			return 1
 		}
 		return 0
 	}
+}
+
+// cpApprovalFn 是 cp 的审批入口。用变量而非直接调用是为了可测——与本包的
+// opsctlAuditWriter 同一套路：测试替换掉它，避免真的去连桌面端审批 socket。
+var cpApprovalFn = requireApproval
+
+// cpSSHProxyClientFn 允许单测显式关闭 proxy 探测，避免读取默认用户数据目录下的 socket/token。
+var cpSSHProxyClientFn = getSSHProxyClient
+
+// requireCpApproval 为一次传输发起审批，审批主体是**远端路径**（grant 按资产存，
+// 本地路径不属于任何资产，塞进 pattern 无法匹配）。
+//
+// 资产间传输（remote → remote）要审两次：先源端读，再目的端写。任一被拒即整体失败。
+// 返回的 ctx 带上审批分配的 sessionID，assetID 是最后审批或拒绝的远端资产，供审计归组和展示。
+func requireCpApproval(ctx context.Context, srcAssetID int64, srcPath string, dstAssetID int64, dstPath, src, dst string) (context.Context, ApprovalResult, int64, error) {
+	detail := fmt.Sprintf("opsctl cp %s → %s", src, dst)
+
+	type target struct {
+		assetID int64
+		path    string
+	}
+	var targets []target
+	if srcAssetID > 0 {
+		targets = append(targets, target{srcAssetID, srcPath})
+	}
+	if dstAssetID > 0 {
+		targets = append(targets, target{dstAssetID, dstPath})
+	}
+
+	var last ApprovalResult
+	for _, tg := range targets {
+		result, err := cpApprovalFn(ctx, approval.ApprovalRequest{
+			Type:      "cp",
+			AssetID:   tg.assetID,
+			AssetName: assetNameForApproval(ctx, tg.assetID),
+			Command:   tg.path,
+			Detail:    detail,
+			SessionID: aictx.GetSessionID(ctx),
+		})
+		last = result
+		// 审批会在没有 session 时自动建一个，后续那次审批与审计都要归到同一个 session
+		if result.SessionID != "" {
+			ctx = aictx.WithSessionID(ctx, result.SessionID)
+		}
+		if err != nil {
+			return ctx, result, tg.assetID, err
+		}
+	}
+	lastAssetID := int64(0)
+	if len(targets) > 0 {
+		lastAssetID = targets[len(targets)-1].assetID
+	}
+	return ctx, last, lastAssetID, nil
+}
+
+type cpAuditArgs struct {
+	AssetID            int64  `json:"asset_id"`
+	Src                string `json:"src"`
+	Dst                string `json:"dst"`
+	SourceAssetID      int64  `json:"source_asset_id,omitempty"`
+	DestinationAssetID int64  `json:"destination_asset_id,omitempty"`
+}
+
+func buildCpAuditArgs(src, dst string, srcAssetID, dstAssetID, assetID int64) (string, error) {
+	data, err := json.Marshal(cpAuditArgs{
+		AssetID:            assetID,
+		Src:                src,
+		Dst:                dst,
+		SourceAssetID:      srcAssetID,
+		DestinationAssetID: dstAssetID,
+	})
+	if err != nil {
+		return "", fmt.Errorf("marshal cp audit arguments: %w", err)
+	}
+	return string(data), nil
+}
+
+// assetNameForApproval 取资产名用于审批弹窗展示。资产在 parseRemotePathCtx 里已经解析过
+// 一次，这里再取不到只影响展示，不阻断流程——与 permission.HandleConfirm 的处理一致。
+func assetNameForApproval(ctx context.Context, assetID int64) string {
+	asset, err := asset_repo.Asset().Find(ctx, assetID)
+	if err != nil {
+		logger.Ctx(ctx).Warn("get asset for cp approval", zap.Int64("assetID", assetID), zap.Error(err))
+		return ""
+	}
+	return asset.Name
 }
 
 // cmdCpViaProxy 通过 proxy 执行文件传输
